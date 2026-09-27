@@ -173,3 +173,80 @@ test("cubismCore() waits for the Core's runtime; CubismModel checks the moc3 hea
     if (saved) globalThis.Live2DCubismCore = saved; else delete globalThis.Live2DCubismCore;
   }
 });
+
+// A stand-in Core whose heap grows like Cubism Core for Web's: an allocation that does not fit moves the heap into a
+// larger buffer (the contents copied) and the arrays made before it keep viewing the old one. Each model has one
+// parameter and one drawable of two vertices; update() writes the vertices from the parameter, both in the current heap.
+const growingCore = (heapBytes) => {
+  const heap = { buf: new ArrayBuffer(heapBytes), used: 0, grows: 0 };
+  const alloc = (n) => {
+    if (heap.used + n > heap.buf.byteLength) {
+      const next = new ArrayBuffer(Math.max(heap.buf.byteLength * 2, heap.used + n));
+      new Uint8Array(next).set(new Uint8Array(heap.buf));
+      heap.buf = next; heap.grows++;
+    }
+    const at = heap.used; heap.used += n; return at;
+  };
+  // model layout: parameter value, part opacity, 4 vertex floats, dynamic flag (+ padding)
+  function Parameters(ptr) {
+    this.ids = ["ParamA"]; this.count = 1;
+    this.minimumValues = Float32Array.of(-10); this.maximumValues = Float32Array.of(10);
+    this.defaultValues = Float32Array.of(0); this.values = new Float32Array(heap.buf, ptr, 1);
+  }
+  function Parts(ptr) { this.ids = ["PartA"]; this.count = 1; this.opacities = new Float32Array(heap.buf, ptr + 4, 1); }
+  function Drawables(ptr) {
+    this.count = 1; this.ids = ["ArtMesh0"];
+    this.vertexPositions = [new Float32Array(heap.buf, ptr + 8, 4)];
+    this.dynamicFlags = new Uint8Array(heap.buf, ptr + 24, 1);
+    this.resetDynamicFlags = () => { new Uint8Array(heap.buf, ptr + 24, 1)[0] = 0; };
+  }
+  const Model = {
+    fromMoc: (moc) => {
+      const ptr = alloc(32);
+      const m = { _ptr: ptr, parameters: new Parameters(ptr), parts: new Parts(ptr), drawables: new Drawables(ptr),
+                  canvasinfo: { CanvasWidth: 1, CanvasHeight: 1, CanvasOriginX: 0, CanvasOriginY: 0, PixelsPerUnit: 1 } };
+      m.update = () => {
+        const v = new Float32Array(heap.buf, ptr, 1)[0];
+        new Float32Array(heap.buf, ptr + 8, 4).set([v, 0, v + 1, 0]);
+        new Uint8Array(heap.buf, ptr + 24, 1)[0] = 32;
+      };
+      m.release = () => { m._ptr = 0; };
+      return moc ? m : null;
+    },
+  };
+  return {
+    heap, Parameters, Parts, Drawables, Model,
+    Version: { csmGetVersion: () => 0x05010000, csmGetLatestMocVersion: () => 5 },
+    Moc: { fromArrayBuffer: (b) => ({ _ptr: alloc(b.byteLength), _release() {} }) },
+  };
+};
+
+test("CubismModel: a model created before the Core's heap grew still takes its parameters and gives its vertices", () => {
+  const saved = globalThis.Live2DCubismCore, C = globalThis.Live2DCubismCore = growingCore(48);
+  const moc = () => new Uint8Array([0x4d, 0x4f, 0x43, 0x33, 5, 0, 0, 0]).buffer;
+  try {
+    const a = new CubismModel(moc());
+    const b = new CubismModel(moc());                      // does not fit: the heap moves
+    assert.equal(C.heap.grows, 1);
+    for (const [m, v] of [[a, 3], [b, -2]]) {
+      m.parameters.values[0] = v; m.parts.opacities[0] = 0.5;
+      m.update();
+      assert.deepEqual([...m.drawables.vertexPositions[0]], [v, 0, v + 1, 0]);
+      assert.equal(m.drawables.dynamicFlags[0], 32);
+      m.resetDynamicFlags();
+      assert.equal(m.drawables.dynamicFlags[0], 0);
+    }
+    // a released model is left alone; the live one follows the next move
+    a.release();
+    const c = new CubismModel(moc());
+    assert.equal(C.heap.grows, 2);
+    b.parameters.values[0] = 7; b.update();
+    assert.deepEqual([...b.drawables.vertexPositions[0]], [7, 0, 8, 0]);
+    assert.equal(b.parameters.values[0], 7);
+    c.parameters.values[0] = 1; c.update();
+    assert.deepEqual([...c.drawables.vertexPositions[0]], [1, 0, 2, 0]);
+    b.release(); c.release();
+  } finally {
+    if (saved) globalThis.Live2DCubismCore = saved; else delete globalThis.Live2DCubismCore;
+  }
+});
