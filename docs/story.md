@@ -97,7 +97,7 @@ keeps its timing silently), `volumes` (`{Bgm, Se, Voice}`), `seed`, `fetch`, `si
 | `seekToLine(i)` | Restarts at line `i` with the game's shortcut (below). |
 | `setLanguage(lang)` | Loads another language of the story and restarts at the current line. |
 | `setVolume(category, v)` | `"Bgm"`, `"Se"` or `"Voice"`, 0–1. |
-| `line`, `lineCount`, `speaker`, `text` | The current line (-1 before the first), the number of lines, the current speaker and text. |
+| `line`, `lineCount`, `speaker`, `text` | The current line (-1 before the first), the number of lines, the current speaker and text (TMP rich text as in the story data, tags included). |
 | `auto`, `speed`, `paused`, `ended`, `lang`, `languages`, `info` | State; `info` is the story manifest without its file lists. |
 | `dispose()` | Stops the player, releases its WebGL context and removes it from the host. |
 

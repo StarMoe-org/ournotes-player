@@ -55,8 +55,8 @@ const play = async (advId) => {
   const msg = el("span", { className: "msg" }), title = el("h1", { textContent: `#${advId}` }), pick = el("select");
   const back = el("a", { href: queryString({ site: q.get("site"), region: q.get("region"), lang: q.get("lang"), kind: q.get("kind") }) || location.pathname,
                          textContent: "Stories" });
-  const story = el("ournotes-story"), line = el("div", { className: "line" });
-  document.body.append(el("header", {}, back, title, el("label", {}, "Language ", pick), msg), el("main", {}, story), line);
+  const story = el("ournotes-story");
+  document.body.append(el("header", {}, back, title, el("label", {}, "Language ", pick), msg), el("main", {}, story));
   story.addEventListener("progress", (e) => { msg.textContent = `loading ${mb(e.detail.loaded)} / ${mb(e.detail.total)}`; });
   story.addEventListener("ready", () => {
     msg.textContent = "";
@@ -66,10 +66,6 @@ const play = async (advId) => {
     pick.replaceChildren(...story.languages.map((l) => new Option(LANGUAGE_NAMES[l] || l, l, false, l === story.lang)));
     pick.disabled = story.languages.length < 2;
     story.focus();
-  });
-  story.addEventListener("line", (e) => {
-    const d = e.detail;
-    line.textContent = `${d.index + 1} / ${d.lineCount}  ${d.speaker ? `${d.speaker}: ` : ""}${d.text}`;
   });
   story.addEventListener("ended", (e) => { msg.textContent = e.detail.reason === 1 ? "skipped" : "ended"; });
   story.addEventListener("error", (e) => {
