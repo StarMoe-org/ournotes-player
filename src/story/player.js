@@ -1,7 +1,7 @@
 import { StoryControls, STORY_PLAYER_CSS } from "./controls.js";
 import { fetchStoryManifest, loadStoryStore } from "./assets.js";
 import { cubismCore } from "../live2d/cubism.js";
-import { parseStoryQuality } from "./params.js";
+import { parseFilmGrain, parseStoryQuality } from "./params.js";
 import { STORY_FRAME_RATE, StorySession } from "./session.js";
 
 // StoryPlayer: a StorySession on a canvas inside a host element. It creates the canvas and its WebGL2 context, keeps
@@ -26,6 +26,7 @@ export class StoryPlayer extends EventTarget {
   //   auto         auto mode (default false, the game's fresh-profile preference); speed: AdvPlaybackSpeed 10
   //                (default), 15, 17, 20
   //   quality      "best" (default), "high", "middle" (the game's quality option) or a BaseQualityMode 0..4
+  //   filmGrain    multiplier of the film grain's intensity (true: 1, the game's; default none)
   //   line         start at this line (default 0)
   //   autoplay     play as soon as the story is loaded (audio may still wait for a user gesture)
   //   controls     show the control bar (default true); uiLang: the control labels' language (default: lang)
@@ -136,7 +137,7 @@ export class StoryPlayer extends EventTarget {
     const session = await StorySession.create(this.gl, this.store, {
       lang: this._lang || undefined, quality: parseStoryQuality(o.quality), seed: o.seed, auto: this._auto, speed: this._speed, line,
       voice: o.voice, sound: this._audioContext ? undefined : false, audioContext: this._audioContext || null, autoplay,
-      width: w, height: h,
+      width: w, height: h, filmGrain: parseFilmGrain(o.filmGrain),
       onCommand: (c) => this._emit("command", { index: c.i, cmd: c.cmd }),
       onLine: (e) => { this._emit("line", { index: e.index, lineCount: session.lineCount, speaker: e.speaker, text: e.text });
                        this._sync(); },

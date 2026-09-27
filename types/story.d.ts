@@ -216,6 +216,8 @@ export interface StorySessionOptions {
   lang?: StoryLanguage;
   /** ADV quality level 0 (Worst) .. 4 (Best, default). */
   quality?: number;
+  /** Multiplier of the film grain's intensity (1: the game's; default 0, no film grain). */
+  filmGrain?: number;
   /** Seed of UnityEngine.Random (eye blinks, pseudo lip sync); default from the clock. */
   seed?: number;
   /** Auto mode (default false). */
@@ -364,6 +366,8 @@ export interface StoryPlayerOptions {
   auto?: boolean;
   speed?: AdvPlaybackSpeed;
   quality?: number;
+  /** Multiplier of the film grain's intensity (true: 1, the game's; default none; 0 or "off": none). */
+  filmGrain?: number | string | boolean;
   line?: number;
   autoplay?: boolean;
   /** Show the control bar (default true). */

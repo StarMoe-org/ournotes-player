@@ -65,6 +65,16 @@ export const parseStoryQuality = (q) => {
   return Number.isInteger(n) && n >= 0 && n <= 4 ? n : 4;
 };
 
+// the host's film grain option: a multiplier of FilmGrain.intensity; unset, 0 or "off" / "false" / "no" for none;
+// set without a value (the bare attribute, true) 1, the game's intensity
+export const parseFilmGrain = (v) => {
+  if (v === undefined || v === null) return 0;
+  if (v === "" || v === true) return 1;
+  if (v === false || ["off", "false", "no"].includes(String(v).toLowerCase())) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+};
+
 // the languages of the story data: code -> text field of episode.json
 export const STORY_LANGUAGES = { ja: "japanese", en: "english", "zh-Hant": "traditionalChinese",
                                  "zh-Hans": "simplifiedChinese", ko: "korean" };

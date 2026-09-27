@@ -331,6 +331,18 @@ test("film grain: renderer textures by type, a custom texture, none without text
   assert.equal(fin.v("_Grain_Texture").label, "gray");
 });
 
+test("film grain: the tiling follows the game camera's pixels (grainScale), grainIntensity scales the intensity", () => {
+  const half = uberOf([P("FilmGrain", { type: 9, intensity: 1, response: F(0.3) })], { grainScale: 0.5 });
+  assert.deepEqual(half.v("_Grain_TilingParams").slice(0, 2), [640 / 256, 360 / 256]);
+  assert.deepEqual(half.v("_Grain_TilingParams").slice(2), URPPost.grainOffsets(7));
+  const weak = uberOf([P("FilmGrain", { type: 9, intensity: F(0.5), response: F(0.3) })], { grainIntensity: 0.5 });
+  assert.ok(weak.b.keywords.includes("_FILM_GRAIN"));
+  assert.deepEqual(f32(weak.v("_Grain_Params")), [1, F(0.3)]);
+  const off = uberOf([P("FilmGrain", { type: 9, intensity: 1 })], { grainIntensity: 0 });
+  assert.ok(!off.b.keywords.includes("_FILM_GRAIN"));
+  assert.equal(off.v("_Grain_Texture").label, "gray");
+});
+
 test("loadVolumeTextures loads the overridden texture parameters once, with the uber pass's samplers", async () => {
   const r = rig();
   const images = [];

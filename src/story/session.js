@@ -71,6 +71,7 @@ export class StorySession {
   //   lang         "ja" "en" "zh-Hant" "zh-Hans" "ko" (default: the manifest's language, else ui/languages.json's)
   //   quality      BaseQualityMode 0 (Worst) .. 4 (Best, default); the game's quality option gives Best 4, High 3,
   //                Middle 2 (STORY_QUALITY)
+  //   filmGrain    multiplier of the film grain's intensity (1: the game's; default 0, no film grain)
   //   seed         seed of UnityEngine.Random (eye blinks, pseudo lip sync) (default: from the clock); random: a
   //                UnityRandom instead
   //   auto         auto mode (default false: the game's fresh-profile preference); speed: AdvPlaybackSpeed 10
@@ -213,6 +214,7 @@ export class StorySession {
     // key is kept); IgnoreData rows are not preloaded
     const renderer = this.renderer = gl ? new StoryRenderer(gl, new ShaderLib(gl, "shaders", store), sc, quality, loop,
                                                             { assets: store }) : null;
+    if (renderer) renderer.filmGrain = opts.filmGrain ?? 0;
     for (const c of episode.commands) {
       if (c.cmd !== "Character" || c.IgnoreData) continue;
       if (characters.has(c.TargetName, c.TargetAssetIndex || 0)) continue;

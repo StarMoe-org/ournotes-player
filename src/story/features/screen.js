@@ -340,7 +340,7 @@ export class StoryScreen {
       for (const [c, items] of cam) this.gl.draw(c, items, width, height);
       const R = this.ctx.renderer;
       this.post.render(this.cameraStack(), color, this._renderTarget(gl, width, height),
-                       { width, height, frameCount: this.ctx.loop.frameCount, grain: R.grain, gray: R.tex.gray,
+                       { width, height, frameCount: this.ctx.loop.frameCount, ...R.grainOptions(), gray: R.tex.gray,
                          black: R.tex.black, camera: this._cameraMatrices(width, height) });
       gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
       gl.viewport(port[0], port[1], port[2], port[3]);

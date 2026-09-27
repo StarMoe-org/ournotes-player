@@ -1,3 +1,4 @@
+import { F } from "../engine/core.js";
 import { URPPost } from "../engine/postfx.js";
 import { Prefab } from "../engine/prefab.js";
 import { Transform, mat4 } from "../engine/math.js";
@@ -21,8 +22,20 @@ export class AdvQuality {
     this.stagePostEffect = !!P._allowStagePostEffect && level > 2;
     this.cameraAntiAliasing = level > 2;
     this.additionalLightsVertex = level === 4;          // only UniversalRP_Best has per-vertex additional lights
+    this.resolutionBaseLength = RESOLUTION_BASE_LENGTH[level];
+  }
+
+  // GameConfig.SetResolutionWithBaseLength -> ScreenManager.CalculateTargetResolution (scale 1) on a landscape screen
+  // `width` pixels wide: Screen.SetResolution to the native size times min(base length / native width, 1), truncated.
+  // Returns the game's screen pixels per native pixel (the cameras render at that size).
+  screenScale(width) {
+    const f = F(Math.min(F(this.resolutionBaseLength / width), 1));
+    return Math.max(1, Math.trunc(F(width * f))) / width;
   }
 }
+
+// GameDetailConfigDefaultData: ResolutionBaseLengthMax by BaseQualityMode Worst .. Best
+export const RESOLUTION_BASE_LENGTH = Object.freeze([1024, 1024, 1440, 1920, 1920]);
 
 // Fwk.Cam.UniversalCamera behind CameraManager.MainCamera
 export class AdvCamera {

@@ -27,7 +27,14 @@ export class StoryRenderer {
     this.vao = gl.createVertexArray();
     this.post = new URPPost(gl, lib, { vao: this.vao });
     this.frameIndex = 0;
+    this.filmGrain = 0;                     // the host's multiplier of FilmGrain.intensity (0: no film grain)
+    this.grainScale = 1;                    // the game's screen pixels per canvas pixel (render)
   }
+
+  // the film grain options of a camera's uber pass: the grain tiles one texel per pixel of the game's screen, which
+  // the quality's resolution caps (AdvQuality.screenScale); the ADV viewport is as wide as the screen
+  // (CreateAdvViewport never pillarboxes)
+  grainOptions() { return { grain: this.grain, grainScale: this.grainScale, grainIntensity: this.filmGrain }; }
 
   async load(base = "") {
     const gl = this.gl;
@@ -382,6 +389,7 @@ export class StoryRenderer {
   render(vp, ui) {
     const gl = this.gl, w = vp.w, h = vp.h;
     this.viewport = vp;
+    this.grainScale = this.quality.screenScale(w);
     this._resize(w, h);
     for (const c of this.characters) c.gl.renderMasks();          // CubismMaskCommandBuffer (before cameras)
     const globals = { ...this._cameraGlobals(w, h), ...this._lightSheet() };
@@ -403,7 +411,7 @@ export class StoryRenderer {
     this.post.buildLut(stack);
     const cam = this.scene.camera;
     this.post.render(stack, this.rt.color, this.rt.post, { width: w, height: h, frameCount: this.loop.frameCount,
-                     grain: this.grain, gray: this.tex.gray, black: this.tex.black,
+                     ...this.grainOptions(), gray: this.tex.gray, black: this.tex.black,
                      camera: { view: this.view, proj: this.proj, near: cam.near, far: cam.far } });
     if (this.quality.stagePostEffect) this._curvedLens(stack);
     // ScreenCapture of the AdvBack layer requested this frame (its renderers re-drawn at event 600, no post)

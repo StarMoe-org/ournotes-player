@@ -4,10 +4,10 @@ import test from "node:test";
 import { PlayerLoop } from "../../src/engine/loop.js";
 import { ADV_COMMAND, StoryCommandError, checkEpisodeCommands, checkStoryUI, createStoryContext, createStoryUILayers,
          registerCommand, registeredCommands, unregisteredCommands, STORY_CONTEXT_FIELDS } from "../../src/story/interfaces.js";
-import { advRow, advViewport, floatParam, htmlColor, intParam, storyLines } from "../../src/story/params.js";
+import { advRow, advViewport, floatParam, htmlColor, intParam, parseFilmGrain, storyLines } from "../../src/story/params.js";
 import { AdvCommandDelayTokens, NEXT_STEP, StoryCharacters, StoryPlayerCore } from "../../src/story/player-core.js";
 import { SilentAudio } from "../../src/story/silent-audio.js";
-import { AdvCharacterField, AdvFieldRendererManager, AdvGlobalVolume } from "../../src/story/field.js";
+import { AdvCharacterField, AdvFieldRendererManager, AdvGlobalVolume, AdvQuality, RESOLUTION_BASE_LENGTH } from "../../src/story/field.js";
 import { AdvStageData } from "../../src/story/stage.js";
 import { Transform } from "../../src/engine/math.js";
 import { createAutoAdvCancellation } from "../../src/story/commands/talk.js";
@@ -179,6 +179,25 @@ test("AdvCommandDelayTokens: a delay that runs out resumes like PlayerLoop.delay
   await loop.step();
   assert.equal(await stopped, false);
   assert.equal(await tokens.delay(0), true);
+});
+
+test("AdvQuality.screenScale: the screen width capped at the quality's resolution base length", () => {
+  assert.deepEqual([...RESOLUTION_BASE_LENGTH], [1024, 1024, 1440, 1920, 1920]);
+  const best = new AdvQuality(4, {}), middle = new AdvQuality(2, {}), low = new AdvQuality(1, {});
+  assert.equal(best.screenScale(1646), 1);
+  assert.equal(best.screenScale(1920), 1);
+  assert.equal(best.screenScale(2400), 1920 / 2400);
+  assert.equal(best.screenScale(3292), 1920 / 3292);
+  assert.equal(middle.screenScale(2400), 1440 / 2400);
+  assert.equal(low.screenScale(2400), 1024 / 2400);
+  assert.equal(best.screenScale(1), 1);
+});
+
+test("parseFilmGrain: none unless set; set bare the game's 1, else a non-negative multiplier", () => {
+  for (const v of ["", true, "1", 1]) assert.equal(parseFilmGrain(v), 1, String(v));
+  for (const v of [undefined, null, "off", "OFF", "false", "no", false, "0", 0, "x", -1, "Infinity"]) assert.equal(parseFilmGrain(v), 0, String(v));
+  assert.equal(parseFilmGrain("0.25"), 0.25);
+  assert.equal(parseFilmGrain(2), 2);
 });
 
 test("advViewport: 13:6 letterbox on narrower landscape screens", () => {

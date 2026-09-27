@@ -539,7 +539,9 @@ export class URPPost {
 
   // --------------------------------------------------------------------- uber
   // `o` = {width, height (camera colour size), frameCount (grain seed), grain (textures by type), gray, black,
-  // hasFinalPass (film grain then belongs to FinalPost)}
+  // hasFinalPass (film grain then belongs to FinalPost), grainScale (the game camera's pixels per pixel of `target`,
+  // default 1: the grain tiles one texel per camera pixel), grainIntensity (multiplies FilmGrain.intensity, default 1;
+  // 0: no film grain)}
   uber(stack, source, bloomTex, target, o) {
     const B = stack.Bloom, G = stack.FilmGrain, V = stack.Vignette, s = "Hidden/Universal Render Pipeline/UberPost";
     const CA = stack.ChromaticAberration, LD = stack.LensDistortion, tm = stack.Tonemapping.mode;
@@ -553,14 +555,15 @@ export class URPPost {
     if (B.intensity > 0) kw.push("_BLOOM_LQ");
     if (URPPost.lensDistortionActive(LD)) kw.push("_DISTORTION");
     if (CA.intensity > 0) kw.push("_CHROMATIC_ABERRATION");
-    const grainOn = !o.hasFinalPass && G.intensity > 0 && (G.type !== 10 || !!G.texture);   // SetupGrain, FilmGrain.IsActive
+    const gi = G.intensity * (o.grainIntensity ?? 1);
+    const grainOn = !o.hasFinalPass && gi > 0 && (G.type !== 10 || !!G.texture);   // SetupGrain, FilmGrain.IsActive
     if (grainOn) kw.push("_FILM_GRAIN");
     if (tm === 2) kw.push("_TONEMAP_ACES");                     // LDR grading: tonemapping in the uber pass
     else if (tm === 1) kw.push("_TONEMAP_NEUTRAL");
     const gt = !grainOn ? o.gray : G.type === 10 ? this._volumeTexture(G.texture) : o.grain[G.type];
     if (!gt) throw new Error(`film grain type ${G.type}`);
     const [ox, oy] = URPPost.grainOffsets(o.frameCount);
-    const w = o.width, h = o.height, tx = URPPost.texel;
+    const w = o.width, h = o.height, gs = o.grainScale ?? 1, tx = URPPost.texel;
     const aspect = w / h;
     const [d1, d2] = URPPost.lensDistortionParams(LD);
     this.blit(s, 0, [{
@@ -571,8 +574,8 @@ export class URPPost {
       _Distortion_Params1: d1, _Distortion_Params2: d2, _Chroma_Params: F(CA.intensity * F(0.05)),
       _Vignette_Params1: [V.color.r, V.color.g, V.color.b, V.rounded ? aspect : 1],
       _Vignette_Params2: [V.center.x, V.center.y, V.intensity * 3, V.smoothness * 5],
-      _Grain_Texture: gt, _Grain_Params: [G.intensity * 4, G.response],
-      _Grain_TilingParams: [w / gt.width, h / gt.height, ox, oy],
+      _Grain_Texture: gt, _Grain_Params: [gi * 4, G.response],
+      _Grain_TilingParams: [w * gs / gt.width, h * gs / gt.height, ox, oy],
     }], target, { keywords: kw });
   }
 

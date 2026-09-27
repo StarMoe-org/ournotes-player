@@ -56,6 +56,7 @@ global `OurnotesStory`), each with a `.min.js` and source maps. Types: `types/st
 | `auto` | Auto mode (boolean; `off` / `false` / `0` is off). Absent: off, as in a new game profile. |
 | `speed` | Playback speed `1`, `1.5`, `1.7` or `2` (the story menu's fast-forward: `AdvPlaybackSpeed`). Default `1`. |
 | `quality` | `best` (default), `high` or `middle`: the game's quality option. Read when the story loads. |
+| `film-grain` | The film grain: present without a value or `1` at the game's intensity, another number a multiplier of it; none when absent, `0` or `off`. Read when the story loads. |
 | `autoplay` | Start as soon as the story is loaded (boolean). Browsers may keep the sound off until the user interacts. |
 | `controls` | The control bar (boolean; `off` hides it). Default shown. |
 | `line` | Start at this line (0-based), read when the story loads. |
@@ -81,10 +82,10 @@ player.addEventListener("line", (e) => console.log(e.detail.speaker, e.detail.te
 
 `StoryPlayer.create(host, options)` (or `new StoryPlayer(host, options)` and `load()`) appends a `<div>` to `host` (an
 element or a shadow root) with the canvas and the control bar in its shadow root, loads the story and resolves once
-it is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed` (10, 15, 17, 20), `quality`, `line`,
-`autoplay`, `controls`, `uiLang` (the control labels' language), `voice`, `sound` (`false`: no Web Audio, the story
-keeps its timing silently), `volumes` (`{Bgm, Se, Voice}`), `seed`, `fetch`, `signal`, `pixelRatio`, `on`
-(`{type: listener}`).
+it is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed` (10, 15, 17, 20), `quality`,
+`filmGrain` (as the attribute), `line`, `autoplay`, `controls`, `uiLang` (the control labels' language), `voice`,
+`sound` (`false`: no Web Audio, the story keeps its timing silently), `volumes` (`{Bgm, Se, Voice}`), `seed`, `fetch`,
+`signal`, `pixelRatio`, `on` (`{type: listener}`).
 
 | Member | Meaning |
 |---|---|
@@ -134,9 +135,10 @@ while (!s.ended) { await s.step(); }                                            
 `StorySession.create(gl, store, options)`: `gl` is a WebGL2 context used by this session alone, or `null` (nothing is
 drawn; the characters, the UI and the timing still run). `store` holds one language of the story (`loadStoryStore`
 merges the manifest's common files with one language group). Options: `lang`, `quality` (0–4, the game's
-`BaseQualityMode`; the quality option gives Best 4, High 3, Middle 2), `seed`, `auto`, `speed`, `line`, `voice`,
-`sound`, `audioContext`, `title`, `autoplay`, `onCommand`, `onLine`, `onLog`, `onEnded`, `onLoaded`, `width`, `height`;
-`ui` and `audio` replace the story UI and the sound manager (tests).
+`BaseQualityMode`; the quality option gives Best 4, High 3, Middle 2), `filmGrain` (the film grain's intensity
+multiplier, 1 the game's; default 0, none), `seed`, `auto`, `speed`, `line`, `voice`, `sound`, `audioContext`, `title`,
+`autoplay`, `onCommand`, `onLine`, `onLog`, `onEnded`, `onLoaded`, `width`, `height`; `ui` and `audio` replace the
+story UI and the sound manager (tests).
 
 Methods: `play()`, `tap()`, `setAuto(on)`, `setSpeed(s)`, `skip()`, `setVolume(category, v)`, `seekVideo(sec)`,
 `step({draw})`, `resize(w, h)`, `render()`, `dispose()`; state: `time`, `frame`, `line`, `lineCount`, `speaker`, `text`,
@@ -194,9 +196,12 @@ SoundVolume, Expression, Costume, EyeBlink, Pause, Resume, plus those the featur
 The stage (background sprite and plane, lights, focus points, volume profiles, particle effect groups), the character
 field, the camera, the field renderer's offscreen composite (per-slot alpha, brightness, blur, the Stage capture
 crossfade; the renderers of other objects routed by their layer as the game's render pass does), the background blur,
-the URP post chain (LUT, bloom, uber with film grain), the curved lens and FXAA. The talk windows the TalkWindow rows
-switch between: the default window and the centered one (`UICenterTalkWindow`) with the dimmed backdrop and the UI blur
-of the screen behind its text.
+the URP post chain (LUT, bloom, uber with film grain), the curved lens and FXAA. The film grain (the `FilmGrain` of
+the ADV warm-up volume) is drawn when the host asks for it (`film-grain`); it tiles one texel per pixel of the screen
+the game renders at: the canvas width capped at the quality's resolution (1920 pixels at Best and High, 1440 at
+Middle), so a canvas wider than that gets a proportionally larger grain. The talk windows the TalkWindow rows switch
+between: the default window and the centered one (`UICenterTalkWindow`) with the dimmed backdrop and the UI blur of
+the screen behind its text.
 Overlay episodes (`playbackMode` 1: the home spot talks and the live result talks) play through the game's simple
 story player in their host screen ([story-simple.md](story-simple.md)).
 
