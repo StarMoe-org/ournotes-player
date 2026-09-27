@@ -55,7 +55,9 @@ export async function useStorySession(gl: WebGL2RenderingContext | null): Promis
       const at = await StorySession.create(gl, store, { ...opts, row: pos.row, autoplay: false });
       if (at instanceof StorySession) {
         const { time, back } = await at.fastForwardClip(() => 12, { budgetMs: 8, paused: () => false });
-        console.log(time ?? -1, back);
+        const steps: number = await at.fastForward(() => at.frame >= 900, { pause: () => Promise.resolve() });
+        await at.fastForwardClip(() => 24, { row: pos.row });
+        console.log(time ?? -1, back, steps);
       }
       await at.dispose();
     }

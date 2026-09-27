@@ -140,7 +140,9 @@ const headlessSource = () => ({ setSpeed() {}, sync() {}, seek(t, done) { done()
 
 // A browser video source: the WebM through an HTMLVideoElement, kept within a tenth of a second of the video's clock,
 // uploaded into a texture when it shows a new frame; its sound on the movie bus of the session's sound manager. The
-// element runs while the video plays and neither the video (VideoInfo.Pause) nor the host (held()) pauses it.
+// element runs while the video plays and neither the video (VideoInfo.Pause) nor the host (held()) pauses it. While
+// the host holds it (a pause, a fast-forward) the element is left where it is: a seek (seekTo) or the sync after the
+// hold puts it at the clock.
 // ENGINE: a page without a user gesture yet may refuse to play a video with sound; such a video plays muted.
 export const browserSource = (ctx, file, held = () => false) => {
   const gl = ctx.gl, el = document.createElement("video");
@@ -164,8 +166,8 @@ export const browserSource = (ctx, file, held = () => false) => {
     setSpeed(s) { el.playbackRate = s; },
     seek(t, done) { seeked = done; el.currentTime = t; },
     sync(v) {
-      const run = v.status === CRI_STATUS.Playing && !v.paused && !held();
-      if (Math.abs(el.currentTime - v.time) > 0.1) el.currentTime = v.time;
+      const hold = held(), run = v.status === CRI_STATUS.Playing && !v.paused && !hold;
+      if (!hold && Math.abs(el.currentTime - v.time) > 0.1) el.currentTime = v.time;
       if (run && el.paused) play();
       else if (!run && !el.paused) el.pause();
     },
@@ -548,9 +550,9 @@ export const delayUntilVideoTimeline = async (p) => {
 
 // The video a Movie or Clip row plays, for the host's controls: {kind: "movie" | "clip", time, duration, seekable, row}
 // (seconds of the video; row: the Index of that row) while the flow flags say one plays, else null. A playing video
-// can be seeked: a movie in place, as the rows after a Movie row wait for its end alone; a clip by a new session
-// started at its row and played on to the time (StorySession.fastForwardClip), as the rows under a clip follow its
-// frames (Delay rows on the video timeline, which does not go back).
+// can be seeked: a movie in place, as the rows after a Movie row wait for its end alone; a clip by playing the session
+// on to the time (StorySession.fastForwardClip; backward from a new session at its row), as the rows under a clip
+// follow its frames (Delay rows on the video timeline, which does not go back).
 export const storyVideoPosition = (ctx) => {
   const v = storyVideo(ctx), cur = v && v.current;
   if (!cur || !v.isVideoPlaying) return null;

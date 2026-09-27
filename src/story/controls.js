@@ -8,12 +8,12 @@ import { SimpleStorySession } from "./simple/session.js";
 // screen, as a click on the story itself); the app's music, sound effect and voice volumes (a video's own sound has no
 // volume option in the game). Apart from them, the player's own items: play / pause, and the position: the line with
 // its bar (a seek restarts at that line, StoryPlayer.seekToLine) and, while a Movie or Clip row plays a video, the
-// video's time with a bar of its own (StoryPlayer.seekVideo: a movie moves in place; a clip's seek restarts at its row
-// and plays on to the time, as the rows under a clip follow its frames; the bar shows the target meanwhile and the
-// line bar rests). The bars are range inputs (arrow keys, Home / End); they rest while the skip confirmation is open.
-// Keyboard (while the player has the focus): Space / Enter next, A auto, F fast-forward, K play / pause. Every element
-// lives in the player's shadow root. An Overlay episode (the simple player: no auto button, no fast-forward) shows
-// neither Auto nor Fast-forward.
+// video's time with a bar of its own (StoryPlayer.seekVideo: a movie moves in place; a clip's seek plays on to the
+// time, backward from the clip's row, as the rows under a clip follow its frames; the bar shows the target meanwhile
+// and the line bar rests). The bars are range inputs (arrow keys, Home / End); they rest while the skip confirmation
+// is open. Keyboard (while the player has the focus): Space / Enter next, A auto, F fast-forward, K play / pause. Every
+// element lives in the player's shadow root. An Overlay episode (the simple player: no auto button, no fast-forward)
+// shows neither Auto nor Fast-forward.
 
 export const STORY_PLAYER_CSS = `
 :host { all: initial; visibility: inherit; }   /* hidden with its host element */
@@ -202,8 +202,8 @@ export class StoryControls {
     } finally { this._want = null; this._seeking = null; this.update(); }
   }
 
-  // moves the playing video to `sec` seconds (StoryPlayer.seekVideo; a seek within a clip restarts the session and
-  // shows its target meanwhile)
+  // moves the playing video to `sec` seconds (StoryPlayer.seekVideo; a seek within a clip shows its target meanwhile
+  // and may replace the session)
   seekVideo(sec) {
     const p = this.player;
     if (!p.video) return Promise.resolve(false);

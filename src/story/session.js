@@ -322,41 +322,52 @@ export class StorySession {
   }
   // the host's pause (no step runs meanwhile): the videos hold too, their sound with them
   setPaused(on) { const v = this.ctx && storyVideo(this.ctx); if (v) v.setHeld(on); }
-  // The host's seek within a clip, on a session started at the Clip row (option `row`, not autoplay): plays until the
-  // clip of that row has played target() seconds, as if played (every row, the Delay rows on the clip's frames, the
-  // subtitles, the sounds' timing), stepping without drawing; meanwhile the sound is muted and ends by game time
-  // (Audio.setFastForward) and the videos hold. Then the clip's video element and the sounds are placed at the time
-  // reached, and the videos hold if paused() says so. It awaits pause() after every budgetMs of steps (the page stays
-  // responsive) and stops when target() falls behind the time reached (a seek back: the caller starts again), when the
-  // clip ends first, or when the session is disposed. -> {time, back}: the clip's time reached (null: it did not play)
-  async fastForwardClip(target, { budgetMs = 12, pause = () => new Promise((r) => setTimeout(r, 0)), paused = () => false } = {}) {
-    const v = this.ctx && storyVideo(this.ctx), row = this.opts.row, audio = this.audio;
-    if (!v || row == null) return { time: null, back: false };
-    const fps = STORY_FRAME_RATE, from = this.frame;
-    let clip = null, back = false, t0 = performance.now();
-    if (audio.setFastForward) audio.setFastForward(true);
-    v.setHeld(true);
-    this.play();
+  // The host's fast-forward: steps without drawing until done() says so (asked before each step), the episode ends or
+  // the session is disposed. Meanwhile the sound is muted and ends by game time (Audio.setFastForward) and the videos
+  // hold; it awaits pause() after every budgetMs of steps (the page stays responsive). Then the sounds and the playing
+  // video are placed at the time reached, and the videos hold while paused() says so. Drawing reads the state and
+  // changes none of it, so the state reached is the state of the same steps played. -> the number of steps
+  async fastForward(done, { budgetMs = 12, pause = () => new Promise((r) => setTimeout(r, 0)), paused = () => false } = {}) {
+    const v = this.ctx && storyVideo(this.ctx), audio = this.audio;
+    if (audio && audio.setFastForward) audio.setFastForward(true);
+    if (v) v.setHeld(true);
+    let n = 0, t0 = performance.now();
     try {
-      while (!this.disposed && !this.ended) {
-        const cur = v.current, want = target();
-        if (!clip && cur && cur.row === row && v.flow.clipVideoPlaying) clip = cur;
-        if (clip) {
-          if (v.current !== clip || clip.isPlayFinished()) break;              // it ended or was stopped first
-          if (want < clip.time - 1e-6) { back = true; break; }
-          if (clip.time >= want - 1e-6) break;
-        }
-        if (this.frame - from > fps * (10 + want)) break;                       // the clip did not come
+      while (!this.disposed && !this.ended && !done()) {
         await this.step({ draw: false });
+        n++;
         if (performance.now() - t0 >= budgetMs) { await pause(); t0 = performance.now(); }
       }
     } finally {
       if (!this.disposed) {
-        if (audio.setFastForward) audio.setFastForward(false);
-        if (clip && !back && v.current === clip && clip.source) clip.seekTo(clip.time);
-        v.setHeld(paused());
+        if (audio && audio.setFastForward) audio.setFastForward(false);
+        const cur = v && v.current;
+        if (cur && cur.source && cur.isPlaying()) cur.seekTo(cur.time);
+        if (v) v.setHeld(paused());
       }
     }
+    return n;
+  }
+  // The host's seek within a clip: fast-forwards until the clip of the Clip row `row` (default: the row the session
+  // started at, option `row`) has played target() seconds (read before each step), as if played: every row, the
+  // Delay rows on the clip's frames, the subtitles, the sounds' timing. In a session started at that row the clip
+  // comes after the shortcut; in one already playing it, the seek goes on from its time. It stops when target() falls
+  // behind the time reached (a seek back: the caller starts again at the row), when the clip ends or stops first, or
+  // when the session is disposed. Options as fastForward. -> {time, back}: the clip's time reached (null: it did not
+  // play)
+  async fastForwardClip(target, { row = this.opts.row, ...opts } = {}) {
+    const v = this.ctx && storyVideo(this.ctx);
+    if (!v || row == null) return { time: null, back: false };
+    const fps = STORY_FRAME_RATE, from = this.frame;
+    let clip = null, back = false;
+    this.play();
+    await this.fastForward(() => {
+      const cur = v.current, want = target();
+      if (!clip && cur && cur.row === row && v.flow.clipVideoPlaying) clip = cur;
+      if (!clip) return this.frame - from > fps * (10 + want);               // the clip did not come
+      if (want < clip.time - 1e-6) { back = true; return true; }
+      return clip.time >= want - 1e-6 || v.current !== clip || clip.isPlayFinished();   // reached, or it ended first
+    }, opts);
     return { time: clip ? clip.time : null, back };
   }
   // the skip confirmation of the story menu: open, the playback waits (AdvPlayer.OnOpenDialog -> Model.SetPause) and a

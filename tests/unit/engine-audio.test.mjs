@@ -94,9 +94,11 @@ test("a fast-forward: muted, sounds end by game time; after it the sounds still 
   ctx.sources[0].onended();                                               // the audio clock: no effect in a fast-forward
   a.update();
   assert.deepEqual([a.isPlaying(early), a.isPlaying(late)], [true, true]);
-  loop.time = 14.5;                                                       // 4.5 s of game time after the first start
+  loop.time = 14;                                                         // its 4 s have passed: over before the update
+  assert.deepEqual([a.isPlaying(early), a.playing.has(early)], [false, true]);
+  loop.time = 14.5;
   a.update();
-  assert.deepEqual([a.isPlaying(early), a.isPlaying(late), a.isPlaying(looped)], [false, true, true]);
+  assert.deepEqual([a.isPlaying(early), a.playing.has(early), a.isPlaying(late), a.isPlaying(looped)], [false, false, true, true]);
   ctx.currentTime = 0.4;
   a.setFastForward(false);
   assert.equal(a.master.gain.value, 1);

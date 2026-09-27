@@ -1,7 +1,8 @@
 // StoryPlayer's handling of its session without a page: the player's pause holds the session's videos with the frames,
 // a session started while paused starts held, a language switch after a seek before the first play restarts at the
-// seek's line, a seek within a clip plays a new session on to the last target asked for, and the control labels
-// follow the story's language unless the host sets one. Stand-in sessions only.
+// seek's line, a seek within a clip plays on to the last target asked for (forward in the session playing the clip,
+// backward in a new one at the clip's row), and the control labels follow the story's language unless the host sets
+// one. Stand-in sessions only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { StoryPlayer } from "../../src/story/player.js";
@@ -11,13 +12,14 @@ const fakeSession = (lineCount = 10, line = -1) => ({
   lang: "ja", lineCount, line, started: false, held: [],
   audio: { suspend: async () => {}, resume: async () => {} },
   setVolume() {}, resize() {}, render() {}, play() { this.started = true; }, setPaused(on) { this.held.push(on); },
+  dispose() {},
 });
 
 // a StoryPlayer without its DOM: the members _startSession, play, pause and setLanguage read
 const bare = () => Object.assign(Object.create(StoryPlayer.prototype), {
   opts: {}, gl: null, store: {}, _lang: "ja", _auto: false, _speed: 10, _volumes: { Bgm: 1 }, _paused: false,
   disposed: false, controls: null, session: null, _audioContext: null, _manifest: {}, _abort: new AbortController(),
-  _pixelSize: () => [130, 60], _emit() {}, _loadStore: async () => ({}), _replace: async (fn) => fn(),
+  _pixelSize: () => [130, 60], _emit() {}, _loadStore: async () => ({}), _exclusive: async (fn) => fn(),
 });
 
 const withSessions = async (sessions, fn) => {
@@ -53,33 +55,52 @@ test("a seek before the first play, then a language: the new language starts at 
     assert.equal(p._startLine, 9);                                        // the session's clamp
   }));
 
-test("a seek within a clip: a session at the clip's row played on to the target; later seeks move it, one back starts over", () => {
-  const clipAt = { kind: "clip", time: 10, duration: 100, row: 7, seekable: true };
+test("a seek within a clip: forward the session goes on from the clip's time; a later seek moves the target, one back starts at the clip's row", () => {
+  const clipAt = (time) => ({ kind: "clip", time, duration: 100, row: 7, seekable: true });
   const runs = [];
-  // the sessions of the seek: the first sees the target move back while it runs, the second reaches it
-  const ffSession = (moveBack) => Object.assign(fakeSession(), {
-    video: null,
+  // a session playing the clip at `time`; moveBack: two seeks arrive while it runs, the last behind the time reached
+  const ffSession = (time, moveBack = false) => Object.assign(fakeSession(), {
+    started: true, video: clipAt(time), disposed: 0, dispose() { this.disposed++; },
     async fastForwardClip(target, o) {
-      const run = { first: target() };
+      const run = { at: this.video.time, first: target(), row: o.row };
       runs.push(run);
       await new Promise((r) => setTimeout(r, 0));
       if (moveBack) { p.seekVideo(30); p.seekVideo(20); }
       run.last = target();
       run.paused = o.paused();
-      return { time: target(), back: target() < run.first };
+      if (target() < run.first) return { time: run.first, back: true };
+      this.video = clipAt(target());
+      return { time: target(), back: false };
     },
   });
   const p = bare();
-  return withSessions([ffSession(true), ffSession(false)], async (opts) => {
-    p.session = Object.assign(fakeSession(), { started: true, video: clipAt });
+  return withSessions([ffSession(0)], async (opts) => {
+    const playing = p.session = ffSession(10, true);
     const first = p.seekVideo(40);
-    assert.deepEqual(p.video, { kind: "clip", time: 40, duration: 100, row: 7, seekable: true });   // the target shows
+    assert.deepEqual(p.video, clipAt(40));                                // the target shows
     const later = p.seekVideo(60);                                        // a later seek moves the target
     assert.equal(p.video.time, 60);
     assert.deepEqual(await Promise.all([first, later]), [true, true]);
-    assert.deepEqual(runs, [{ first: 60, last: 20, paused: false }, { first: 20, last: 20, paused: false }]);
-    assert.deepEqual(opts.map((o) => [o.row, o.autoplay]), [[7, false], [7, false]]);
-    assert.equal(p.video, null);                                          // done: the session's own position again
+    assert.deepEqual(runs, [{ at: 10, first: 40, row: 7, last: 20, paused: false },   // from the clip's time
+                            { at: 0, first: 20, row: 7, last: 20, paused: false }]);  // back: a session at the row
+    assert.deepEqual([opts.map((o) => [o.row, o.autoplay]), playing.disposed], [[[7, false]], 1]);
+    assert.deepEqual(p.video, clipAt(20));                                // done: the session's own position again
+    // forward again: the same session, no new one
+    assert.equal(await p.seekVideo(90), true);
+    assert.deepEqual([runs.length, runs[2].at, opts.length, p.video.time], [3, 20, 1, 90]);
+  });
+});
+
+test("a seek within a clip behind the clip's time starts at the clip's row at once", () => {
+  const p = bare(), runs = [];
+  const session = (time) => Object.assign(fakeSession(), {
+    started: true, video: { kind: "clip", time, duration: 50, row: 4, seekable: true }, dispose() {},
+    async fastForwardClip(target) { runs.push([this.video.time, target()]); this.video.time = target(); return { time: target(), back: false }; },
+  });
+  return withSessions([session(0)], async (opts) => {
+    p.session = session(30);
+    assert.equal(await p.seekVideo(12), true);
+    assert.deepEqual([runs, opts.map((o) => o.row)], [[[0, 12]], [4]]);
   });
 });
 

@@ -308,7 +308,11 @@ export class Audio {
     const ct = ts.contextTime + (fresh ? Math.max(0, performance.now() - ts.performanceTime) / 1000 : 0);
     return i.startOffsetSec + (ct - i.startCtx) * (i.rate || 1);
   }
-  isPlaying(id) { const i = this.playing.get(id); return !!i && (this.fastForward || !i.finished); }   // (game time in a fast-forward)
+  // (in a fast-forward: until its length has passed in game time, as the audio clock would have ended it)
+  isPlaying(id) {
+    const i = this.playing.get(id);
+    return !!i && (this.fastForward ? this.loop.time - i.gameStart < i.length : !i.finished);
+  }
 
   // ISoundInfo.RegisterPlayFinishedFunction / IsPlayFinished as a promise
   whenFinished(info) { return info.stopped ? Promise.resolve() : new Promise((res) => info.onFinished.push(res)); }

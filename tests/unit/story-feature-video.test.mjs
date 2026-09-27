@@ -5,6 +5,7 @@
 // element on a stand-in document). Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Audio } from "../../src/engine/audio.js";
 import { PlayerLoop } from "../../src/engine/loop.js";
 import { GLTarget } from "../../src/engine/texture.js";
 import { commandHandler, createStoryUILayers } from "../../src/story/interfaces.js";
@@ -15,7 +16,8 @@ import { VideoInfo, browserSource, delayUntilVideoTimeline, seekStoryVideo, stor
          tryPauseCurrentVideo } from "../../src/story/features/video.js";
 import { StoryPlayerCore } from "../../src/story/player-core.js";
 import { StorySession } from "../../src/story/session.js";
-import { headlessGL } from "../../scripts/lib/headless.mjs";
+import { HeadlessAudioContext, headlessGL } from "../../scripts/lib/headless.mjs";
+import { storyState } from "../../scripts/lib/story-state.mjs";
 
 const flush = () => new Promise((res) => setImmediate(res));
 const settle = async (loop, promise, max = 600) => {
@@ -338,7 +340,8 @@ const clipSession = (t, script) => {
            audio: { setFastForward(on) { ff.push(on); } },
            get frame() { return t.loop.frameCount; },
            play() { this.played = this.played || script(); },
-           async step() { await t.loop.step(); await flush(); } };
+           async step() { await t.loop.step(); await flush(); },
+           fastForward: StorySession.prototype.fastForward };
 };
 
 test("a seek within a clip: the session plays on to the clip's time, every row under it as played, then goes on", async () => {
@@ -381,6 +384,67 @@ test("a seek within a clip stops for a seek back, and at the clip's end; it hold
   const end = await StorySession.prototype.fastForwardClip.call(s2, () => 5, { budgetMs: Infinity, paused: () => true });
   assert.deepEqual([end.time, end.back, storyVideo(t2.ctx).held], [1, false, true]);   // the 1 s clip ended first
   disposeStoryFeatures(t2.ctx);
+});
+
+// A stand-in session over the player with the engine's sound manager on a clock that is the game clock (its sources
+// end when the game time passes their end, before the frame runs), and a script of rows under a clip: a looped music
+// cue, a sound effect, a voice a row waits for, Delay rows on the clip's frames. draw: a drawn step reads the state as
+// a draw does.
+const soundSession = async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 11 }]);
+  const clock = new HeadlessAudioContext({ endSources: true });
+  const cues = { 1: ["bgm", 0, 48000], 2: ["se", 1, 12000], 3: ["voice", 2, 30000] };
+  const audio = new Audio((id) => ({ sheet: "s", cue: cues[id][0], category: cues[id][1], row: {} }), t.loop, { context: clock });
+  for (const [cue, , n] of Object.values(cues))
+    audio.buffers.set(`s/${cue}`, { buf: clock.createBuffer(2, n, 48000), meta: { sampleRate: 48000, samples: n, loopStart: 24000, loopEnd: n } });
+  t.ctx.audio = audio;
+  t.loop.on("update", () => audio.update());
+  const step = t.loop.step.bind(t.loop);
+  t.loop.step = () => { clock.advance(Math.fround(t.loop.time + t.loop.stepDelta())); return step(); };
+  await installStoryFeatures(t.ctx, t.p);
+  const log = [], reads = [];
+  const script = async () => {
+    await flush();
+    audio.play(1, { loop: true, crossFade: 0 });
+    await cmd(t, { cmd: "Clip", VideoID: 11, i: 3 });
+    await cmd(t, { cmd: "Delay", Duration: 0.3, i: 4 });
+    audio.play(2, { crossFade: 0 });
+    const voice = audio.play(3, { crossFade: 0 });
+    while (audio.isPlaying(voice)) await t.loop.yield("Update");       // a row waiting for its voice
+    log.push(["voice over", t.loop.frameCount]);
+    await cmd(t, { cmd: "Delay", Duration: 0.9, i: 5 });
+    log.push(["delay", t.loop.frameCount]);
+  };
+  const s = { ctx: t.ctx, loop: t.loop, audio, disposed: false, ended: false, opts: { row: 3 }, log, reads, played: null,
+              get frame() { return t.loop.frameCount; }, play() { this.played = this.played || script(); },
+              async step({ draw = true } = {}) { await t.loop.step(); await flush(); if (draw) reads.push(storyState(this).video); },
+              fastForward: StorySession.prototype.fastForward, fastForwardClip: StorySession.prototype.fastForwardClip };
+  return { t, s };
+};
+
+test("a fast-forward reaches the state of the same steps drawn: rows, clip, timeline, sounds and their positions", async () => {
+  const drawn = await soundSession(), ff = await soundSession();
+  drawn.s.play();
+  for (let n = 0; n < 45; n++) await drawn.s.step();
+  // a clip seek from its row to 1.2 s, then on with a plain fast-forward
+  const r = await ff.s.fastForwardClip(() => 1.2, { budgetMs: 0, pause: async () => {} });
+  assert.deepEqual([r.back, ff.s.frame], [false, 37]);
+  await ff.s.fastForward(() => ff.s.frame >= 45, { budgetMs: Infinity });
+  assert.deepEqual(ff.s.log, drawn.s.log);
+  assert.deepEqual(drawn.s.log.map((x) => x[0]), ["voice over", "delay"]);
+  assert.deepEqual(storyState(ff.s), storyState(drawn.s));
+  assert.equal(ff.s.reads.length, 0);                                     // nothing drawn meanwhile
+  // the music plays on (the effect and the voice have ended), restarted at its place in the loop (0.5 .. 1 s)
+  const cues = (s) => [...s.audio.playing.values()].map((i) => i.cue.cue);
+  assert.deepEqual([cues(ff.s), cues(drawn.s)], [["bgm"], ["bgm"]]);
+  const pos = (s) => { const i = [...s.audio.playing.values()][0]; return i.startOffsetSec + (s.audio.ctx.currentTime - i.startCtx); };
+  const looped = (x) => (x >= 1 ? 0.5 + ((x - 0.5) % 0.5) : x);
+  assert.ok(pos(drawn.s) > 1 && Math.abs(pos(ff.s) - looped(pos(drawn.s))) < 1e-6, `${pos(ff.s)} ${pos(drawn.s)}`);
+  assert.equal(ff.s.audio.master.gain.value, 1);
+  // one step apart: different states
+  await drawn.s.step();
+  assert.notDeepEqual(storyState(ff.s), storyState(drawn.s));
+  disposeStoryFeatures(ff.t.ctx); disposeStoryFeatures(drawn.t.ctx);
 });
 
 test("the skip confirmation pauses a playing video and resumes it; the playback's stop stops every loaded video", async () => {

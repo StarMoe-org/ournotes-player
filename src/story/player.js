@@ -258,10 +258,10 @@ export class StoryPlayer extends EventTarget {
   }
 
   // moves the playing video to `sec` seconds of it (the player's own seek, as its pause) -> false when no video can be
-  // seeked now (`video.seekable`). A movie moves in place. A clip: a new session starts at the clip's row and plays on
-  // without drawing until the clip is at `sec` (StorySession.fastForwardClip), so that the rows under it are where
-  // they would be; a seek asked for meanwhile moves the target (one behind the time reached starts over), and the
-  // promise of the first resolves when the last is done.
+  // seeked now (`video.seekable`). A movie moves in place. A clip plays on without drawing until it is at `sec`
+  // (StorySession.fastForwardClip), so that the rows under it are where they would be: forward from where the session
+  // is, backward in a new session started at the clip's row. A seek asked for meanwhile moves the target (one behind
+  // the time reached starts over), and the promise of the first resolves when the last is done.
   async seekVideo(sec) {
     const job = this._clipSeek;
     if (job) { job.target = Math.min(Math.max(0, Number(sec) || 0), job.duration); return job.done; }
@@ -278,14 +278,16 @@ export class StoryPlayer extends EventTarget {
     this._sync();
     job.done = (async () => {
       try {
-        for (let back = true; back && !job.stop;) {
+        for (let back = true, restart = false; back && !job.stop; restart = true) {
           back = false;
-          await this._replace(async () => {
-            await this._startSession(0, false, { row: job.row, draw: false });
+          await this._exclusive(async () => {
+            // the session playing the clip goes on from its time; a seek behind it starts again at the clip's row
+            const at = this.session && this.session.video;
+            if (restart || !at || at.kind !== "clip" || at.row !== job.row || !at.seekable || job.target < at.time - 1e-6)
+              await this._swap(() => this._startSession(0, false, { row: job.row, draw: false }));
             const s = this.session;
-            ({ back } = await s.fastForwardClip(() => job.target, { paused: () => this._paused }));
-            if (this.session !== s) { back = false; return; }                   // replaced meanwhile
-            s.render();
+            ({ back } = await s.fastForwardClip(() => job.target, { row: job.row, paused: () => this._paused }));
+            if (this.session === s) s.render();
           });
         }
         return true;
@@ -311,21 +313,31 @@ export class StoryPlayer extends EventTarget {
     await this._replace(async () => { this.store = store; this._lang = lang; await this._startSession(line, playing); });
   }
 
-  // one replacement of the session at a time: a later one waits for the one running
-  async _replace(fn) {
+  // replaces the session (fn starts the new one)
+  _replace(fn) { return this._exclusive(() => this._swap(fn)); }
+
+  // one change of the session at a time (a replacement, a seek within a clip): a later one waits for the one running;
+  // the frame loop stops meanwhile, after the step it may be in
+  async _exclusive(fn) {
     const prev = this._replacing;
     const run = this._replacing = (async () => {
       if (prev) await prev.catch(() => {});
       this._running = false;
       if (this._raf) cancelAnimationFrame(this._raf);
-      const old = this.session;
-      this.session = null;
-      this._sync();
-      if (old) { try { if (old.busy) await old._stepping; } catch (_) { /* reported */ } await old.dispose(); }
+      const s = this.session;
+      if (s && s.busy) { try { await s._stepping; } catch (_) { /* reported */ } }
       try { await fn(); } catch (e) { this._fail(e); throw e; }
       this._drive();
     })();
     try { await run; } finally { if (this._replacing === run) this._replacing = null; }
+  }
+
+  async _swap(fn) {
+    const old = this.session;
+    this.session = null;
+    this._sync();
+    if (old) await old.dispose();
+    await fn();
   }
 
   // stops the player and removes it from the host; the WebGL context is released
@@ -403,12 +415,12 @@ export class StoryPlayer extends EventTarget {
       last = now;
       let n = 0;
       try {
-        while (acc >= dt && n < MAX_STEPS && !this._paused && !this.disposed && this.session === s) {
+        while (acc >= dt && n < MAX_STEPS && this._running && !this._paused && !this.disposed && this.session === s) {
           acc -= dt; n++;
           await s.step({ draw: !(acc >= dt && n < MAX_STEPS) });   // a further step follows: no draw for this one
         }
       } catch (e) { if (!this.disposed && this.session === s) this._fail(e); return; }
-      if (this.disposed || this.session !== s) return;
+      if (!this._running || this.disposed || this.session !== s) return;
       if (n && this.controls) this.controls.tick();
       this._raf = requestAnimationFrame(tick);
     };

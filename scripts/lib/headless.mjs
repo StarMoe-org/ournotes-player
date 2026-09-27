@@ -70,7 +70,8 @@ export const headlessGL = ({ width = 320, height = 180, onCall = null } = {}) =>
 
 // ---- WebAudio -------------------------------------------------------------------------------------------------------
 // The clock is `t` (seconds), set by the caller. decodeAudioData reads the header only (FLAC STREAMINFO, MP4 mdhd) and,
-// as a browser does, returns a buffer at the context's sample rate (the length scaled from the file's rate).
+// as a browser does, returns a buffer at the context's sample rate (the length scaled from the file's rate). With
+// endSources, advance(t) sets the clock and ends (onended) the buffer sources played to their end or stopped.
 const param = (v = 0) => ({ value: v, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {},
                             cancelScheduledValues() {}, setTargetAtTime() {}, cancelAndHoldAtTime() {} });
 const audioNode = (extra = {}) => ({ connect(d) { return d; }, disconnect() {}, ...extra });
@@ -95,8 +96,18 @@ const mp4Info = (b) => {
 };
 
 export class HeadlessAudioContext {
-  constructor({ sampleRate = 48000 } = {}) {
+  constructor({ sampleRate = 48000, endSources = false } = {}) {
     this.sampleRate = sampleRate; this.state = "running"; this.destination = audioNode(); this.t = 0;
+    this.sources = endSources ? new Set() : null;
+  }
+  advance(t) {
+    this.t = t;
+    if (!this.sources) return;
+    for (const s of [...this.sources]) {
+      if (!s.stopped && (s.loop || this.t - s.when < s.length)) continue;
+      this.sources.delete(s);
+      if (s.onended) s.onended();
+    }
   }
   get currentTime() { return this.t; }
   resume() { this.state = "running"; return Promise.resolve(); }
@@ -105,8 +116,16 @@ export class HeadlessAudioContext {
   getOutputTimestamp() { return { contextTime: this.t, performanceTime: 0 }; }
   createGain() { return audioNode({ gain: param(1) }); }
   createBufferSource() {
+    const ctx = this;
     return audioNode({ buffer: null, loop: false, loopStart: 0, loopEnd: 0, playbackRate: param(1), detune: param(0),
-                       start() {}, stop() {}, onended: null });
+                       onended: null, when: 0, length: 0, stopped: false,
+                       start(when = 0, offset = 0) {
+                         if (!ctx.sources) return;
+                         this.when = Math.max(when, ctx.t);
+                         this.length = this.buffer ? this.buffer.duration - offset : 0;
+                         ctx.sources.add(this);
+                       },
+                       stop() { this.stopped = true; } });
   }
   createBuffer(channels, length, sampleRate) { return audioBuffer(channels, length, sampleRate); }
   async decodeAudioData(ab) {

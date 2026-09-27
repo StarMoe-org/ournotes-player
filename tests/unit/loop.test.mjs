@@ -1,9 +1,9 @@
 // PlayerLoop (src/engine/loop.js): the phase order of one step, the clock (time, deltaTime, frameCount, timeScale)
-// and the UniTask waits, as the module documents them. Synthetic inputs only.
+// and the UniTask waits, as the module documents them; the drain between phases. Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EASE } from "../../src/engine/tween.js";
-import { PlayerLoop } from "../../src/engine/loop.js";
+import { PlayerLoop, drain } from "../../src/engine/loop.js";
 
 test("one step runs the phases in the documented order", async () => {
   const loop = new PlayerLoop(60);
@@ -67,4 +67,14 @@ test("UniTask.DelayFrame resolves in the Update phase of the target frame", asyn
   loop.delayFrame(2).then(() => { at = loop.frameCount; });
   for (let i = 0; i < 3; i++) await loop.step();
   assert.equal(at, 2);
+});
+
+test("a drain resolves after every microtask queued before it, however deep; drains resolve in their order", async () => {
+  const log = [];
+  const chain = (n) => (n ? Promise.resolve().then(() => chain(n - 1)) : log.push("chain"));
+  chain(50);
+  const a = drain().then(() => log.push("a")), b = drain().then(() => log.push("b"));
+  queueMicrotask(() => log.push("micro"));
+  await Promise.all([a, b]);
+  assert.deepEqual(log, ["micro", "chain", "a", "b"]);
 });

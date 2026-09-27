@@ -26,10 +26,23 @@ import { Tweens } from "./tween.js";
 // Continuations resumed in a phase run before the next phase starts: every phase
 // ends with a drain that waits for the microtask queue to empty.
 
+// One MessageChannel for every drain, each drain a message of its own (a macrotask: the microtasks queued before it
+// have all run when it arrives); a channel made per drain costs far more than the message. In Node the port keeps the
+// process alive only while a drain waits.
+let drainPorts = null;
+const drainWaits = [];
 export const drain = () => new Promise((res) => {
-  const ch = new MessageChannel();
-  ch.port1.onmessage = () => { ch.port1.close(); res(); };
-  ch.port2.postMessage(0);
+  if (!drainPorts) {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      drainWaits.shift()();
+      if (!drainWaits.length && ch.port1.unref) ch.port1.unref();
+    };
+    drainPorts = ch;
+  }
+  if (!drainWaits.length && drainPorts.port1.ref) drainPorts.port1.ref();
+  drainWaits.push(res);
+  drainPorts.port2.postMessage(0);
 });
 
 // (float)TimeSpan.FromSeconds(sec).TotalSeconds: TimeSpan.Interval(sec, 1000) rounds to whole milliseconds (half away

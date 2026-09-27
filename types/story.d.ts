@@ -252,13 +252,20 @@ export interface StorySessionOptions {
   height?: number;
 }
 
+/** StorySession.fastForward options. */
+export interface StoryFastForwardOptions {
+  budgetMs?: number;
+  pause?: () => Promise<void>;
+  paused?: () => boolean;
+}
+
 /** The video a Movie or Clip row plays (seconds of the video) and the Index of that row. */
 export interface StoryVideoPosition {
   kind: "movie" | "clip";
   time: number;
   duration: number;
   row: number | null;
-  /** A movie moves in place; a clip is seeked by a session started at its row (StorySession.fastForwardClip). */
+  /** A movie moves in place; a clip is seeked by playing on to the time (StorySession.fastForwardClip). */
   seekable: boolean;
 }
 
@@ -304,11 +311,16 @@ export class StorySession {
   setVolume(category: StoryVolumeCategory, volume: number): void;
   /** Moves the playing movie to `seconds` of it; false when no video can be seeked now (a clip: fastForwardClip). */
   seekVideo(seconds: number): Promise<boolean>;
-  /** In a session started at a Clip row (`row`): plays on without drawing, the sound muted and the videos held,
-   *  until the clip is at `target()` seconds (read at every step), yielding with `pause` (default a macrotask) every
-   *  `budgetMs` (default 12); then puts the sounds and the video at the time reached, the videos held while
-   *  `paused()`. `back`: the target went behind the time reached (start over). */
-  fastForwardClip(target: () => number, options?: { budgetMs?: number; pause?: () => Promise<void>; paused?: () => boolean }):
+  /** The host's fast-forward: steps without drawing until `done()` (asked before each step), the sound muted and ended
+   *  by game time, the videos held, yielding with `pause` (default a macrotask) every `budgetMs` (default 12); then
+   *  puts the sounds and the playing video at the time reached, the videos held while `paused()`. The state reached
+   *  is the state of the same steps drawn. Resolves to the number of steps. */
+  fastForward(done: () => boolean, options?: StoryFastForwardOptions): Promise<number>;
+  /** Fast-forwards until the clip of the Clip row `row` (default: the row the session started at, option `row`) is
+   *  at `target()` seconds (read at every step): in a session started at that row the clip comes after the shortcut,
+   *  in one playing it the seek goes on from its time. `back`: the target went behind the time reached (start again
+   *  at the row). */
+  fastForwardClip(target: () => number, options?: StoryFastForwardOptions & { row?: number }):
     Promise<{ time: number | null; back: boolean }>;
   /** The host's pause (no step runs meanwhile): the videos hold. */
   setPaused(on: boolean): void;
@@ -449,9 +461,9 @@ export class StoryPlayer extends EventTarget {
   setLanguage(lang: StoryLanguage): Promise<void>;
   /** Restarts at line i with the game's shortcut. */
   seekToLine(i: number): Promise<void>;
-  /** Moves the playing video to `seconds` of it (the player's own seek): a movie in place, a clip by a new session
-   *  at its row played on to that time; a call while a clip's seek runs moves its target. False when no video can
-   *  be seeked now. */
+  /** Moves the playing video to `seconds` of it (the player's own seek): a movie in place, a clip played on to that
+   *  time (forward from where the session is, backward in a new session at its row); a call while a clip's seek runs
+   *  moves its target. False when no video can be seeked now. */
   seekVideo(seconds: number): Promise<boolean>;
   /** The language of the control labels (null: the language the story plays in). */
   setUiLanguage(lang: string | null): void;

@@ -99,7 +99,7 @@ is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed`
 | `setSpeed(s)` | The story menu's fast-forward button set to `s` (10, 15, 17, 20): a speed other than ×1 turns auto on, ×1 brings back the player's own auto choice. |
 | `skip()` | The game's skip: the playback stops without the closing rows (`AdvPlayer.Skip`). |
 | `seekToLine(i)` | Restarts at line `i` with the game's shortcut (below). |
-| `seekVideo(sec)` | Moves the playing video to `sec` seconds of it (the player's own seek, as its pause; the game has none): a movie in place, a clip by restarting at its row and playing on to that time (below). While a clip's seek runs, `video` gives the target and a further call moves it; the calls resolve together. Resolves to `false` when no video can be seeked now. |
+| `seekVideo(sec)` | Moves the playing video to `sec` seconds of it (the player's own seek, as its pause; the game has none): a movie in place, a clip by playing on to that time (below). While a clip's seek runs, `video` gives the target and a further call moves it; the calls resolve together. Resolves to `false` when no video can be seeked now. |
 | `setLanguage(lang)` | Loads another language of the story and restarts at the current line. |
 | `setUiLanguage(lang)` | Sets the control bar's language (as `uiLang`); `null`: the language the story plays in. |
 | `setVolume(category, v)` | `"Bgm"`, `"Se"` or `"Voice"` (the app's sound options), or `"Movie"` (the videos' own sound), 0–1. |
@@ -150,11 +150,13 @@ start at, with the shortcut to it), `voice`, `sound`, `audioContext`, `title`, `
 Methods: `play()`, `tap()`, `setAuto(on)`, `setSpeed(s)`, `skip()`, `setVolume(category, v)`, `seekVideo(sec)`,
 `setPaused(on)` (the host's pause: the videos hold; no step runs meanwhile), `setDialogOpen(open, resume)` (the skip
 confirmation: the playback waits and a playing video pauses; closed with `resume` false after a confirmed skip, the
-video stays paused until the stop), `fastForwardClip(target, {budgetMs, pause, paused})` (in a session started at a
-Clip row: plays on without drawing until the clip is at `target()` seconds, read at every step; resolves to
-`{time, back}`, `back` when the target went behind the time reached), `step({draw})`, `resize(w, h)`, `render()`,
-`dispose()`; state: `time`, `frame`, `line`, `lineCount`, `speaker`, `text`, `isAuto`, `speed`, `started`, `ended`,
-`endReason`, `video`.
+video stays paused until the stop), `fastForward(done, {budgetMs, pause, paused})` (steps without drawing until
+`done()`, the sound muted and ended by game time, the videos held; then the sounds and the playing video are put at the
+time reached; `pause()` is awaited after every `budgetMs` of steps; resolves to the number of steps),
+`fastForwardClip(target, {row, budgetMs, pause, paused})` (fast-forwards until the clip of the Clip row `row`, by
+default the row the session started at, is at `target()` seconds, read at every step; resolves to `{time, back}`,
+`back` when the target went behind the time reached), `step({draw})`, `resize(w, h)`, `render()`, `dispose()`; state:
+`time`, `frame`, `line`, `lineCount`, `speaker`, `text`, `isAuto`, `speed`, `started`, `ended`, `endReason`, `video`.
 `StorySession.requirements(store)` lists the commands the episode executes and those this player does not support.
 
 ## Seek
@@ -167,12 +169,12 @@ waiting motions play their last queued entry, and after 0.2 s the cover goes (`F
 and the episode goes on normally. The state reached is the game's state after a resume.
 
 `seekVideo(sec)` moves a movie's video in place: the rows after a Movie row wait for its end alone. The rows under a
-clip follow its frames (Delay rows on the video timeline, which does not go back), so a clip's seek restarts at the
-Clip row with the shortcut and plays on from there without drawing, the sound muted and the videos held, until the
-clip is at `sec`. The rows, subtitles and characters are then where playing would have brought them; the sounds
-playing at that point go on from their positions, the video is put at the time and the drawing resumes. A seek
-backwards starts over at the Clip row the same way. Every frame up to the target runs, so the work grows with the
-distance from the clip's start.
+clip follow its frames (Delay rows on the video timeline, which does not go back), so a clip's seek plays on without
+drawing, the sound muted and the videos held, until the clip is at `sec`: forward from where the session is, backward
+from the Clip row, where a new session starts with the shortcut. The rows, subtitles and characters are then where
+playing would have brought them (drawing only reads the state); the sounds playing at that point go on from their
+positions, the video is put at the time and the drawing resumes. Every frame up to the target runs, so the work grows
+with the distance: from the current time forward, from the clip's start backward.
 
 ## Episodes the player refuses
 

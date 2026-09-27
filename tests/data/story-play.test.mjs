@@ -8,32 +8,32 @@
 //   CUBISM_CORE=<file>          Live2D's live2dcubismcore.min.js (skipped without it; not part of this repository)
 //   MOTIONSYNC_CORE=<file>      Live2D's live2dcubismmotionsynccore.min.js (optional: without it lip sync is missing)
 //   OURNOTES_STORY_LINE=<n>     the line of the seek check (default: the middle line)
+//   OURNOTES_FF_FRAMES=<a>,<b>  the fast-forward check: drawn to frame a, then fast-forwarded to frame b (default
+//                               300,900); with a Clip row, also a seek within its clip to OURNOTES_FF_CLIP seconds (20)
 //
 // Checks: the episode plays to its end in auto mode with every Live2D parameter finite; two runs with the same seed
 // give the same command trace and the same per-frame state; a session started at a line (the game's shortcut) shows
-// that line first, within its first 2 s, deterministically; taps in manual mode advance every line.
+// that line first, within its first 2 s, deterministically; taps in manual mode advance every line; a fast-forward
+// (and a seek within a clip, from the clip's row and from where the clip plays) reaches the state of the same steps
+// drawn (the headless GL context: every draw call made), sound included.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import vm from "node:vm";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { DirStore, fileFetch } from "../../scripts/lib/headless.mjs";
+import { DirStore, HeadlessAudioContext, fileFetch, headlessGL, headlessImages } from "../../scripts/lib/headless.mjs";
+import { storyState } from "../../scripts/lib/story-state.mjs";
 
 const DIR = process.env.OURNOTES_STORY || "", CORE = process.env.CUBISM_CORE || "", MS = process.env.MOTIONSYNC_CORE || "";
 const LANG = process.env.OURNOTES_STORY_LANG || null;
 const SKIP = !DIR ? "OURNOTES_STORY is not set (path of a story manifest or directory)"
   : !CORE ? "CUBISM_CORE is not set (path of Live2D's live2dcubismcore.min.js)" : false;
 
-// the Cores in their own contexts, as a page's classic <script>s would run them
-const loadScript = (file, name) => {
-  const c = { console, setTimeout, clearTimeout, WebAssembly, TextDecoder, TextEncoder, performance, atob, btoa, Math,
-              Promise, fetch: undefined };
-  c.window = c; c.self = c; c.globalThis = c; c.document = { currentScript: { src: "" } }; c.location = { href: "" };
-  vm.createContext(c);
-  vm.runInContext(`${fs.readFileSync(file, "utf8")}\n;globalThis.${name} = ${name};`, c);
-  return c[name];
-};
+// the Cores in this context, as a page's classic <script>s run in the page's (their Node detection hidden: they take
+// the browser's way); in a vm context of their own their code runs several times slower
+const loadScript = (file, name) =>
+  new Function("process", "require", "module", "__dirname", `${fs.readFileSync(file, "utf8")}
+;return ${name};`)();
 
 if (!SKIP) {
   globalThis.Live2DCubismCore = loadScript(CORE, "Live2DCubismCore");
@@ -113,4 +113,48 @@ test("story: manual mode advances on taps", T, async () => {
   const taps = (s, n) => { if (!s.core.nextStep || n - last < 45) return false; last = n; return true; };
   const r = await run({ seed: 5, auto: false, taps });
   assert.equal(r.trace.filter((t) => / line \d+$/.test(t)).length, r.lines);
+});
+
+// a session on the headless GL context whose sound clock is the game clock: the sources end when the game time passes
+// their end, before the frame runs
+const openDrawn = async (opts = {}) => {
+  const { StorySession } = await import("../../src/story/session.js");
+  const store = headlessImages(await openStore());
+  const audioContext = new HeadlessAudioContext({ endSources: true });
+  const s = await StorySession.create(headlessGL({ width: 1300, height: 600 }), store,
+                                      { seed: 1, auto: true, audioContext, autoplay: false, width: 1300, height: 600, ...opts });
+  const step = s.loop.step.bind(s.loop);
+  s.loop.step = () => { audioContext.advance(Math.fround(s.loop.time + s.loop.stepDelta())); return step(); };
+  audioContext.advance(s.loop.time);
+  s.play();
+  return s;
+};
+const drawnTo = async (s, frame) => { while (s.frame < frame && !s.ended) await s.step({ draw: true }); };
+const sameState = (a, b, what) => {
+  const x = storyState(a), y = storyState(b);
+  const differ = Object.keys(x).filter((k) => x[k] !== y[k]);
+  assert.deepEqual(differ, [], `${what}: ${differ.join(", ")} differ`);
+  assert.equal(a.frame, b.frame);
+};
+
+test("story: a fast-forward reaches the state of the same steps drawn", T, async () => {
+  const [from, to] = (process.env.OURNOTES_FF_FRAMES || "300,900").split(",").map(Number);
+  const a = await openDrawn(), b = await openDrawn();
+  await drawnTo(a, from); await drawnTo(b, from);
+  await b.fastForward(() => b.frame >= to, { budgetMs: Infinity });
+  await drawnTo(a, to);
+  sameState(a, b, `drawn to frame ${from}, fast-forwarded to ${to}`);
+  const clip = b.episode.commands.find((c) => c.cmd === "Clip" && !c.IgnoreData && (c.VideoID || 0) > 0);
+  await a.dispose(); await b.dispose();
+  if (!clip) return;
+  const target = Number(process.env.OURNOTES_FF_CLIP || 20);
+  // a seek within the clip from its row, then on from where the clip plays to twice the time
+  const c = await openDrawn({ row: clip.i }), d = await openDrawn({ row: clip.i });
+  assert.equal((await c.fastForwardClip(() => target, { budgetMs: Infinity })).back, false);
+  await drawnTo(d, c.frame);
+  sameState(c, d, `clip row ${clip.i} to ${target} s`);
+  await c.fastForwardClip(() => 2 * target, { row: clip.i, budgetMs: Infinity });
+  await drawnTo(d, c.frame);
+  sameState(c, d, `clip row ${clip.i} on to ${2 * target} s`);
+  await c.dispose(); await d.dispose();
 });
