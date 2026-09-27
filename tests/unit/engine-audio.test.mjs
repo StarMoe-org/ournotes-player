@@ -11,7 +11,8 @@ const fakeContext = () => {
   const param = (v) => ({ value: v, setValueAtTime(x) { this.value = x; } });
   const buffer = (chs, len, sampleRate) => {
     const data = Array.from({ length: chs }, () => new Float32Array(len));
-    return { numberOfChannels: chs, length: len, sampleRate, getChannelData: (i) => data[i], copyToChannel: (x, i) => data[i].set(x) };
+    return { numberOfChannels: chs, length: len, sampleRate, duration: len / sampleRate, getChannelData: (i) => data[i],
+             copyToChannel: (x, i) => data[i].set(x) };
   };
   return {
     sampleRate: 48000, currentTime: 0, state: "running", destination: {},
@@ -77,6 +78,34 @@ test("a video's sound: on the movie bus at the movie volume, which no category o
   assert.equal(a.movieBus.gain.value, 1);
   media.disconnect();
   assert.equal(ctx.media[0].to, null);
+});
+
+test("a fast-forward: muted, sounds end by game time; after it the sounds still playing restart at their game position", () => {
+  const ctx = fakeContext(), loop = { time: 10 };
+  const cue = { sheet: "s", cue: "c", category: 1, row: {} };
+  const a = new Audio(() => cue, loop, { context: ctx });
+  a.buffers.set("s/c", { buf: ctx.buffer(1, 48000 * 4, 48000), meta: { sampleRate: 48000, samples: 48000 * 4 } });
+  a.setFastForward(true);
+  assert.equal(a.master.gain.value, 0);
+  const early = a.play(1, { crossFade: 0 });                              // 4 s long, started at 10 s
+  loop.time = 12;
+  const late = a.play(1, { crossFade: 0, startSec: 1 });                  // 3 s left, started at 12 s
+  const looped = a.play(1, { crossFade: 0, loop: true });
+  ctx.sources[0].onended();                                               // the audio clock: no effect in a fast-forward
+  a.update();
+  assert.deepEqual([a.isPlaying(early), a.isPlaying(late)], [true, true]);
+  loop.time = 14.5;                                                       // 4.5 s of game time after the first start
+  a.update();
+  assert.deepEqual([a.isPlaying(early), a.isPlaying(late), a.isPlaying(looped)], [false, true, true]);
+  ctx.currentTime = 0.4;
+  a.setFastForward(false);
+  assert.equal(a.master.gain.value, 1);
+  const n = ctx.sources.length;
+  assert.deepEqual(ctx.sources.slice(n - 2).map((s) => s.started), [[0.4, 3.5], [0.4, 2.5]]);   // 1 + 2.5 s; 2.5 s looped
+  assert.equal(a.get(late).startOffsetSec, 3.5);
+  loop.time = 16.5;                                                       // 5.5 s into the cue: past its end
+  a.setFastForward(true); a.setFastForward(false);
+  assert.equal(a.isPlaying(late), false);
 });
 
 test("a cue at playback speed 2 plays a time-stretched buffer; the synced time runs at the speed", () => {

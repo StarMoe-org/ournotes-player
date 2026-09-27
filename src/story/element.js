@@ -15,6 +15,8 @@ import { StoryPlayer } from "./player.js";
 //                absent, 0 or "off". Read when the story loads
 //   autoplay     play as soon as the story is loaded (boolean; audio may still wait for a user gesture)
 //   controls     show the control bar (boolean attribute; "off" hides it); default shown
+//   ui-lang      the control bar's language (a story language or a BCP 47 tag); default: the language the story
+//                plays in
 //   line         start at this line (0-based), read when the story loads
 //   volume-bgm, volume-se, volume-voice   0..1
 //   volume-movie the videos' own sound, 0..1 (the game's movie sound volume; no option of the app changes it)
@@ -41,7 +43,9 @@ export const parseStorySpeed = (s) => {
 };
 
 export class OurnotesStoryElement extends Base {
-  static get observedAttributes() { return ["src", "lang", "auto", "speed", "volume-bgm", "volume-se", "volume-voice", "volume-movie"]; }
+  static get observedAttributes() {
+    return ["src", "lang", "ui-lang", "auto", "speed", "volume-bgm", "volume-se", "volume-voice", "volume-movie"];
+  }
 
   constructor() {
     super();
@@ -110,6 +114,7 @@ export class OurnotesStoryElement extends Base {
     const p = this.player;
     if (!p) return;
     if (name === "lang") { if (value) p.setLanguage(value).catch(() => {}); }
+    else if (name === "ui-lang") p.setUiLanguage(value);
     else if (name === "auto") p.setAuto(this._flag("auto", false));
     else if (name === "speed") p.setSpeed(parseStorySpeed(value || "1"));
     else if (name === "volume-bgm") p.setVolume("Bgm", this._volume(name));
@@ -133,6 +138,7 @@ export class OurnotesStoryElement extends Base {
     const num = (a) => (this.hasAttribute(a) ? Number(this.getAttribute(a)) : undefined);
     this._loading = StoryPlayer.create(this.shadowRoot, {
       src: new URL(this.src, document.baseURI).href, lang: this.getAttribute("lang") || undefined,
+      uiLang: this.getAttribute("ui-lang") || undefined,
       auto: this._flag("auto", false), speed: parseStorySpeed(this.getAttribute("speed") || "1"),
       quality: this.getAttribute("quality") || undefined, line: num("line"), autoplay: this.hasAttribute("autoplay"),
       filmGrain: this.getAttribute("film-grain") ?? undefined,

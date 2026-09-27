@@ -90,6 +90,7 @@ const playMovie = async (c, p, v, cancelled) => {
   const p3 = floatParam(c.Parameter3), alpha = p3 <= 0 ? 1 : Math.min(p3, 1);
   forget(v.view.show(video, alpha, p.calcDuration(floatParam(c.Parameter1), 0), cancelled));
   Object.assign(v.flow, { clipVideoPlaying: false, clipVideoSkip: false, clipControlAvailable: false, movieVideoPlaying: true });
+  video.row = c.i;
   videoUI(p.ctx, "hideAutoButton");
   videoUI(p.ctx, "showFastForwardButton");
   let aborted = false;
@@ -131,6 +132,7 @@ const playClip = async (c, p, v, alpha, fade, cancelled) => {
   videoUI(p.ctx, "hideVideoButtons");
   videoUI(p.ctx, "hideAutoButton");
   v.flow.clipVideoPlaying = true;
+  video.row = c.i;
   v.flow.clipControlAvailable = (c.Parameter3 ?? "").trim().toLowerCase() !== "hideclipcontrol";
   videoUI(p.ctx, "showFastForwardButton");
   if (video.hasAudio) {

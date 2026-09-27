@@ -82,7 +82,7 @@ const play = async (advId) => {
   });
   await loadScript(q.get("core") || CORE, "Live2DCubismCore");
   if (q.get("motionsync")) await loadScript(q.get("motionsync"), "Live2DCubismMotionSyncCore");
-  for (const a of ["lang", "line", "speed", "quality", "film-grain"]) if (q.get(a)) story.setAttribute(a, q.get(a));
+  for (const a of ["lang", "ui-lang", "line", "speed", "quality", "film-grain"]) if (q.get(a)) story.setAttribute(a, q.get(a));
   if (q.get("auto")) story.setAttribute("auto", q.get("auto"));
   story.src = new URL(manifest, site).href;
 };

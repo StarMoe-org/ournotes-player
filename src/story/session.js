@@ -11,7 +11,7 @@ import { motionSyncCore } from "../live2d/motionsync.js";
 import { AdvBackgroundField, AdvCamera, AdvCharacterField, AdvFieldRendererManager, AdvGlobalVolume, AdvQuality } from "./field.js";
 import { ADV_PLAYBACK_MODE, STORY_FRAME_RATE, StoryCommandError, checkStoryUI, createStoryContext } from "./interfaces.js";
 import { StoryCharacters, StoryPlayerCore } from "./player-core.js";
-import { STORY_LANGUAGES, advViewport, storyLines } from "./params.js";
+import { STORY_LANGUAGES, advViewport, storyLines, storyStart } from "./params.js";
 import { speakerName } from "./commands/talk.js";
 import { StoryRenderer } from "./renderer.js";
 import { SilentAudio } from "./silent-audio.js";
@@ -78,6 +78,7 @@ export class StorySession {
   //   auto         auto mode (default false: the game's fresh-profile preference); speed: AdvPlaybackSpeed 10
   //                (default), 15, 17, 20
   //   line         start at this line (the game's shortcut to it), default 0
+  //   row          start at the row of this Index instead (the shortcut to it; the lines before it count as shown)
   //   voice        false: no voices (AdvPlaybackSession.WithVoice); default true
   //   sound        false: no Web Audio (SilentAudio keeps the timing); default: Web Audio when available
   //   audioContext an AudioContext to play into (default: an own one at 48 kHz, closed on dispose)
@@ -239,9 +240,9 @@ export class StorySession {
       settings: { player: P, masterIds: scene.settings.masterIdSettings }, localize, lang, playbackMode: mode,
       titleTextId, episode, story, assets: store, renderer, gl: this.gl });
     this.lines = storyLines(episode);
-    const line = Math.max(0, Math.min(opts.line || 0, this.lines.length - 1));
+    const { line, shortCutIndex } = storyStart(episode, { line: opts.line, row: opts.row });
     const core = this.core = new StoryPlayerCore(ctx, {
-      auto: !!opts.auto, speed: opts.speed || 10, shortCutIndex: line > 0 ? this.lines[line].i : -1,
+      auto: !!opts.auto, speed: opts.speed || 10, shortCutIndex,
       onCommand: opts.onCommand || null,
       onLine: (e) => { this.speaker = e.speaker; this.text = e.text; if (opts.onLine) opts.onLine(e); },
       onLog: opts.onLog || null,
@@ -321,6 +322,43 @@ export class StorySession {
   }
   // the host's pause (no step runs meanwhile): the videos hold too, their sound with them
   setPaused(on) { const v = this.ctx && storyVideo(this.ctx); if (v) v.setHeld(on); }
+  // The host's seek within a clip, on a session started at the Clip row (option `row`, not autoplay): plays until the
+  // clip of that row has played target() seconds, as if played (every row, the Delay rows on the clip's frames, the
+  // subtitles, the sounds' timing), stepping without drawing; meanwhile the sound is muted and ends by game time
+  // (Audio.setFastForward) and the videos hold. Then the clip's video element and the sounds are placed at the time
+  // reached, and the videos hold if paused() says so. It awaits pause() after every budgetMs of steps (the page stays
+  // responsive) and stops when target() falls behind the time reached (a seek back: the caller starts again), when the
+  // clip ends first, or when the session is disposed. -> {time, back}: the clip's time reached (null: it did not play)
+  async fastForwardClip(target, { budgetMs = 12, pause = () => new Promise((r) => setTimeout(r, 0)), paused = () => false } = {}) {
+    const v = this.ctx && storyVideo(this.ctx), row = this.opts.row, audio = this.audio;
+    if (!v || row == null) return { time: null, back: false };
+    const fps = STORY_FRAME_RATE, from = this.frame;
+    let clip = null, back = false, t0 = performance.now();
+    if (audio.setFastForward) audio.setFastForward(true);
+    v.setHeld(true);
+    this.play();
+    try {
+      while (!this.disposed && !this.ended) {
+        const cur = v.current, want = target();
+        if (!clip && cur && cur.row === row && v.flow.clipVideoPlaying) clip = cur;
+        if (clip) {
+          if (v.current !== clip || clip.isPlayFinished()) break;              // it ended or was stopped first
+          if (want < clip.time - 1e-6) { back = true; break; }
+          if (clip.time >= want - 1e-6) break;
+        }
+        if (this.frame - from > fps * (10 + want)) break;                       // the clip did not come
+        await this.step({ draw: false });
+        if (performance.now() - t0 >= budgetMs) { await pause(); t0 = performance.now(); }
+      }
+    } finally {
+      if (!this.disposed) {
+        if (audio.setFastForward) audio.setFastForward(false);
+        if (clip && !back && v.current === clip && clip.source) clip.seekTo(clip.time);
+        v.setHeld(paused());
+      }
+    }
+    return { time: clip ? clip.time : null, back };
+  }
   // the skip confirmation of the story menu: open, the playback waits (AdvPlayer.OnOpenDialog -> Model.SetPause) and a
   // playing video pauses (OnSkipButtonTapped -> TryPauseCurrentVideo); closed, the playback goes on and, unless the
   // skip was confirmed (resume false: the stop follows), so does the video (OnConfirmDialogButtonTapped ->

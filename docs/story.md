@@ -59,6 +59,7 @@ global `OurnotesStory`), each with a `.min.js` and source maps. Types: `types/st
 | `film-grain` | The film grain: present without a value or `1` at the game's intensity, another number a multiplier of it; none when absent, `0` or `off`. Read when the story loads. |
 | `autoplay` | Start as soon as the story is loaded (boolean). Browsers may keep the sound off until the user interacts. |
 | `controls` | The control bar (boolean; `off` hides it). Default shown. |
+| `ui-lang` | The control bar's language: a story language or a BCP 47 tag such as `zh-TW` (other codes give English). Default: the language the story plays in, also after `lang` changes. |
 | `line` | Start at this line (0-based), read when the story loads. |
 | `volume-bgm`, `volume-se`, `volume-voice` | Volumes 0–1 of music, sound effects and voices (the app's sound options). |
 | `volume-movie` | Volume 0–1 of the videos' own sound (the game's movie sound volume, 1 by default; none of the app's options changes it). |
@@ -84,7 +85,7 @@ player.addEventListener("line", (e) => console.log(e.detail.speaker, e.detail.te
 `StoryPlayer.create(host, options)` (or `new StoryPlayer(host, options)` and `load()`) appends a `<div>` to `host` (an
 element or a shadow root) with the canvas and the control bar in its shadow root, loads the story and resolves once it
 is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed` (10, 15, 17, 20), `quality`,
-`filmGrain` (as the attribute), `line`, `autoplay`, `controls`, `uiLang` (the control labels' language), `voice`,
+`filmGrain` (as the attribute), `line`, `autoplay`, `controls`, `uiLang` (as `ui-lang`), `voice`,
 `sound` (`false`: no Web Audio, the story keeps its timing silently), `volumes` (`{Bgm, Se, Voice, Movie}`), `seed`,
 `fetch`, `signal`, `pixelRatio`, `on` (`{type: listener}`).
 
@@ -97,12 +98,13 @@ is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed`
 | `setSpeed(s)` | The story menu's fast-forward button set to `s` (10, 15, 17, 20): a speed other than ×1 turns auto on, ×1 brings back the player's own auto choice. |
 | `skip()` | The game's skip: the playback stops without the closing rows (`AdvPlayer.Skip`). |
 | `seekToLine(i)` | Restarts at line `i` with the game's shortcut (below). |
-| `seekVideo(sec)` | Moves the playing movie to `sec` seconds of it (the player's own seek, as its pause; the game has none). Resolves to `false` when no video can be seeked now. |
+| `seekVideo(sec)` | Moves the playing video to `sec` seconds of it (the player's own seek, as its pause; the game has none): a movie in place, a clip by restarting at its row and playing on to that time (below). While a clip's seek runs, `video` gives the target and a further call moves it; the calls resolve together. Resolves to `false` when no video can be seeked now. |
 | `setLanguage(lang)` | Loads another language of the story and restarts at the current line. |
+| `setUiLanguage(lang)` | Sets the control bar's language (as `uiLang`); `null`: the language the story plays in. |
 | `setVolume(category, v)` | `"Bgm"`, `"Se"` or `"Voice"` (the app's sound options), or `"Movie"` (the videos' own sound), 0–1. |
 | `line`, `lineCount`, `speaker`, `text` | The current line (-1 before the first), the number of lines, the current speaker and text (TMP rich text as in the story data, tags included). |
 | `auto`, `speed`, `paused`, `ended`, `lang`, `languages`, `info` | State; `info` is the story manifest without its file lists. |
-| `video` | While a Movie or Clip row plays a video, `{kind, time, duration, seekable}` (`"movie"` or `"clip"`, seconds of the video), else `null`. Only a playing movie is `seekable`: the rows after a Movie row wait for its end alone, while the rows under a clip follow its frames (Delay rows on the video timeline, which does not go back). |
+| `video` | While a Movie or Clip row plays a video, `{kind, time, duration, row, seekable}` (`"movie"` or `"clip"`, seconds of the video, the row's `Index`), else `null`. |
 | `dispose()` | Stops the player, releases its WebGL context and removes it from the host. |
 
 Events: `progress` `{loaded, total}` (bytes while loading), `ready`, `play`, `pause`, `line`
@@ -118,10 +120,11 @@ Fast-forward (×1 → ×1.5 → ×1.7 → ×2 → ×1), Skip (with a confirmatio
 open), and the music, sound effect and voice volumes (a video's own sound follows none of them, as in the game;
 `volume-movie` sets it). Apart from them, the player's own items: play / pause and the position. The position is the
 line with its bar: moving the bar restarts at that line (`seekToLine`), playing or not as before. While a Movie or Clip
-row plays a video, a second bar shows the video's time; on a movie it seeks (`seekVideo`), on a clip it only shows. The
-bars are range inputs (arrow keys, Home / End) and rest while the skip confirmation is open. Keyboard, while the player
-has the focus: Space or Enter next, A auto, F fast-forward, K play / pause. An Overlay episode (the simple story player
-has no auto button and no fast-forward) shows neither Auto nor Fast-forward.
+row plays a video, a second bar shows the video's time and seeks it (`seekVideo`); during a clip's seek it shows the
+target and the line bar rests. The bars are range inputs (arrow keys, Home / End) and rest while the skip
+confirmation is open. Keyboard, while the player has the focus: Space or Enter next, A auto, F fast-forward, K play /
+pause. An Overlay episode (the simple story player has no auto button and no fast-forward) shows neither Auto nor
+Fast-forward.
 
 ## `StorySession`
 
@@ -138,15 +141,19 @@ while (!s.ended) { await s.step(); }                                            
 drawn; the characters, the UI and the timing still run). `store` holds one language of the story (`loadStoryStore`
 merges the manifest's common files with one language group). Options: `lang`, `quality` (0–4, the game's
 `BaseQualityMode`; the quality option gives Best 4, High 3, Middle 2), `filmGrain` (the film grain's intensity
-multiplier, 1 the game's; default 0, none), `seed`, `auto`, `speed`, `line`, `voice`, `sound`, `audioContext`, `title`,
-`autoplay`, `onCommand`, `onLine`, `onLog`, `onEnded`, `onLoaded`, `width`, `height`; `ui` and `audio` replace the
-story UI and the sound manager (tests).
+multiplier, 1 the game's; default 0, none), `seed`, `auto`, `speed`, `line` (or `row`: the `Index` of the row to
+start at, with the shortcut to it), `voice`, `sound`, `audioContext`, `title`, `autoplay`, `onCommand`, `onLine`,
+`onLog`, `onEnded`, `onLoaded`, `width`, `height`; `ui` and `audio` replace the story UI and the sound manager
+(tests).
 
 Methods: `play()`, `tap()`, `setAuto(on)`, `setSpeed(s)`, `skip()`, `setVolume(category, v)`, `seekVideo(sec)`,
 `setPaused(on)` (the host's pause: the videos hold; no step runs meanwhile), `setDialogOpen(open, resume)` (the skip
 confirmation: the playback waits and a playing video pauses; closed with `resume` false after a confirmed skip, the
-video stays paused until the stop), `step({draw})`, `resize(w, h)`, `render()`, `dispose()`; state: `time`, `frame`,
-`line`, `lineCount`, `speaker`, `text`, `isAuto`, `speed`, `started`, `ended`, `endReason`, `video`.
+video stays paused until the stop), `fastForwardClip(target, {budgetMs, pause, paused})` (in a session started at a
+Clip row: plays on without drawing until the clip is at `target()` seconds, read at every step; resolves to
+`{time, back}`, `back` when the target went behind the time reached), `step({draw})`, `resize(w, h)`, `render()`,
+`dispose()`; state: `time`, `frame`, `line`, `lineCount`, `speaker`, `text`, `isAuto`, `speed`, `started`, `ended`,
+`endReason`, `video`.
 `StorySession.requirements(store)` lists the commands the episode executes and those this player does not support.
 
 ## Seek
@@ -157,6 +164,14 @@ Talk and Location rows show nothing, motions play without their waits, BGM rows 
 covered black (`TransitionManager.FadeOutBlackImmediate`). At the target row the last remembered BGM plays, the
 waiting motions play their last queued entry, and after 0.2 s the cover goes (`FadeInImmediate`); the line then shows
 and the episode goes on normally. The state reached is the game's state after a resume.
+
+`seekVideo(sec)` moves a movie's video in place: the rows after a Movie row wait for its end alone. The rows under a
+clip follow its frames (Delay rows on the video timeline, which does not go back), so a clip's seek restarts at the
+Clip row with the shortcut and plays on from there without drawing, the sound muted and the videos held, until the
+clip is at `sec`. The rows, subtitles and characters are then where playing would have brought them; the sounds
+playing at that point go on from their positions, the video is put at the time and the drawing resumes. A seek
+backwards starts over at the Clip row the same way. Every frame up to the target runs, so the work grows with the
+distance from the clip's start.
 
 ## Episodes the player refuses
 

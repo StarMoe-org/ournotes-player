@@ -4,7 +4,7 @@ import test from "node:test";
 import { PlayerLoop } from "../../src/engine/loop.js";
 import { ADV_COMMAND, StoryCommandError, checkEpisodeCommands, checkStoryUI, createStoryContext, createStoryUILayers,
          registerCommand, registeredCommands, unregisteredCommands, STORY_CONTEXT_FIELDS } from "../../src/story/interfaces.js";
-import { advRow, advViewport, floatParam, htmlColor, intParam, parseFilmGrain, storyLines } from "../../src/story/params.js";
+import { advRow, advViewport, floatParam, htmlColor, intParam, parseFilmGrain, storyLines, storyStart } from "../../src/story/params.js";
 import { AdvCommandDelayTokens, NEXT_STEP, StoryCharacters, StoryPlayerCore } from "../../src/story/player-core.js";
 import { SilentAudio } from "../../src/story/silent-audio.js";
 import { AdvCharacterField, AdvFieldRendererManager, AdvGlobalVolume, AdvQuality, RESOLUTION_BASE_LENGTH } from "../../src/story/field.js";
@@ -416,6 +416,19 @@ test("StoryRenderer: feature renderers routed by layer (main camera list, offscr
 test("storyLines: Talk rows with a valid text id", () => {
   const e = { commands: [talk(0, 1), talk(1, 0), { i: 2, cmd: "Talk" }, talk(3, 2, { IgnoreData: true }), talk(4, 2)] };
   assert.deepEqual(storyLines(e).map((c) => c.i), [0, 4]);
+});
+
+test("storyStart: a line, clamped, or a row: the lines before it and the Index the shortcut runs to", () => {
+  const e = { commands: [{ i: 0, cmd: "Character" }, talk(1, 1), { i: 2, cmd: "Clip", VideoID: 4 }, { i: 3, cmd: "Delay" },
+                         talk(4, 2), { i: 5, cmd: "Clip", IgnoreData: true }, talk(6, 3)] };
+  assert.deepEqual(storyStart(e), { line: 0, shortCutIndex: -1 });
+  assert.deepEqual(storyStart(e, { line: 2 }), { line: 2, shortCutIndex: 6 });
+  assert.deepEqual(storyStart(e, { line: 9 }), { line: 2, shortCutIndex: 6 });
+  assert.deepEqual(storyStart(e, { row: 2 }), { line: 1, shortCutIndex: 2 });   // one line shown before the clip
+  assert.deepEqual(storyStart(e, { row: 3, line: 2 }), { line: 1, shortCutIndex: 3 });
+  assert.deepEqual(storyStart(e, { row: 0 }), { line: 0, shortCutIndex: -1 });   // the first row: no shortcut
+  assert.throws(() => storyStart(e, { row: 5 }), /no row 5/);                  // IgnoreData
+  assert.deepEqual(storyStart({ commands: [] }, { line: 3 }), { line: 0, shortCutIndex: -1 });
 });
 
 test("AdvGlobalVolume: volumes of equal priority blend in registration order", () => {

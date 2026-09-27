@@ -1,4 +1,5 @@
-// The labels of the story controls in the story languages (the page's language picks them; English otherwise).
+// The labels of the story controls in the story languages (the language the story plays in picks them, or one the
+// host sets; English for any other).
 
 export const STORY_STRINGS = {
   ja: { next: "次へ", auto: "オート", speed: "早送り", skip: "スキップ", cancel: "キャンセル",

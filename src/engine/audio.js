@@ -11,6 +11,7 @@
 // Category bus gains are SoundVolumeSettings.DefaultVolume x option volume
 // (Bgm 0.7, Se 1.0, Voice 1.0 with default options).
 // The sound of a story video has a bus of its own outside the categories (connectMedia, movie volume below).
+// A fast-forward of the host's (setFastForward) mutes the output and ends each sound by the game time played.
 
 import { timeStretch } from "./timestretch.js";
 
@@ -72,11 +73,13 @@ export class Audio {
     this.resolve = resolve;
     this.loop = loop;
     this.buffers = new Map();
+    this.master = this.ctx.createGain();     // every bus; muted during a fast-forward
+    this.master.connect(this.ctx.destination);
     this.buses = {};
     for (const [cat, g] of Object.entries(SOUND_BUS_GAIN)) {
       const n = this.ctx.createGain();
       n.gain.value = g;
-      n.connect(this.ctx.destination);
+      n.connect(this.master);
       this.buses[cat] = n;
     }
     this.nextId = 1;
@@ -88,7 +91,44 @@ export class Audio {
     this.categoryVolumes = new SoundCategoryVolumes((name) => this._applyBus(name));
     this.movieVolume = 1;
     this.movieBus = this.ctx.createGain();
-    this.movieBus.connect(this.ctx.destination);
+    this.movieBus.connect(this.master);
+    this.fastForward = false;
+  }
+
+  // The host's fast-forward (a seek within a clip: frames of game time run faster than real time): the output is
+  // muted and a sound ends when its length has passed in game time, not on the audio clock. Turned off, every sound
+  // still playing restarts at the position the game time has reached (past its end: it ends), and the output is heard.
+  setFastForward(on) {
+    if (!!on === this.fastForward) return;
+    this.fastForward = !!on;
+    if (!on) this._resync();
+    this.master.gain.setValueAtTime(on ? 0 : 1, this.ctx.currentTime);
+  }
+
+  _resync() {
+    const t = this.loop.time, ctx = this.ctx;
+    for (const i of [...this.playing.values()]) {
+      if (!i.src || i.stopped) continue;
+      const buf = i.playBuf, old = i.src;
+      let at = i.bufStart + (t - i.gameStart);                // seconds into the buffer played
+      if (old.loop) {
+        const ls = old.loopStart || 0, le = old.loopEnd || buf.duration;
+        if (at >= le && le > ls) at = ls + ((at - ls) % (le - ls));
+      } else if (at >= buf.duration) { this._kill(i); continue; }
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.loop = old.loop; src.loopStart = old.loopStart; src.loopEnd = old.loopEnd;
+      src.connect(i.gain);
+      src.onended = () => { i.finished = true; };
+      old.onended = null;
+      try { old.stop(); } catch (_) { /* already ended */ }
+      i.finished = false;
+      i.startCtx = ctx.currentTime;
+      src.start(i.startCtx, at);
+      i.src = src;
+      i.startOffsetSec = at * (i.rate || 1);                   // the cue's own seconds (a stretched buffer runs 1 / rate)
+      i.startSample = Math.round(i.startOffsetSec * i.meta.sampleRate);
+      i.playStart = Math.round(at * buf.sampleRate);
+    }
   }
 
   // The movie sound volume (Fwk.Local.LocalDataBase.MovieSoundVolume through GameConfig.SetMovieSoundVolume ->
@@ -224,6 +264,9 @@ export class Audio {
     src.onended = () => { info.finished = true; };
     const start = Math.trunc(startSec * 1000) / 1000;
     info.startCtx = this.ctx.currentTime;
+    info.gameStart = this.loop.time;                         // game time of the start, and the buffer position then
+    info.bufStart = rate === 1 ? start : start / rate;
+    info.length = loop ? Infinity : info.playBuf.duration - info.bufStart;
     info.startSample = Math.round(start * entry.meta.sampleRate);   // in frames at the cue's own rate
     info.startOffsetSec = start;
     // the position in the buffer played (a time-stretched buffer runs 1 / rate as long)
@@ -265,7 +308,7 @@ export class Audio {
     const ct = ts.contextTime + (fresh ? Math.max(0, performance.now() - ts.performanceTime) / 1000 : 0);
     return i.startOffsetSec + (ct - i.startCtx) * (i.rate || 1);
   }
-  isPlaying(id) { const i = this.playing.get(id); return !!i && !i.finished; }
+  isPlaying(id) { const i = this.playing.get(id); return !!i && (this.fastForward || !i.finished); }   // (game time in a fast-forward)
 
   // ISoundInfo.RegisterPlayFinishedFunction / IsPlayFinished as a promise
   whenFinished(info) { return info.stopped ? Promise.resolve() : new Promise((res) => info.onFinished.push(res)); }
@@ -294,7 +337,7 @@ export class Audio {
   update() {
     const t = this.loop.time;
     for (const i of [...this.playing.values()]) {
-      if (i.finished) { this._kill(i); continue; }
+      if (this.fastForward ? t - i.gameStart >= i.length : i.finished) { this._kill(i); continue; }
       if (i.fade === 2) {
         const v = 1 - (t - i.fadeStart) / i.fadeDur;
         if (v <= 0) { this._kill(i); continue; }

@@ -60,6 +60,7 @@ export class VideoInfo {
     this.onPlayFinished = [];
     this.source = source;                    // null once released
     this.seekHold = 0; this._seekEnd = null;  // the host's seek (seekTo)
+    this.row = null;                         // the Index of the Movie or Clip row that plays it (the host's clip seek)
   }
 
   isPlaying() { return this.status === CRI_STATUS.Playing; }
@@ -545,23 +546,24 @@ export const delayUntilVideoTimeline = async (p) => {
   }
 };
 
-// The video a Movie or Clip row plays, for the host's controls: {kind: "movie" | "clip", time, duration, seekable}
-// (seconds of the video) while the flow flags say one plays, else null. Only a playing movie can be seeked: the rows
-// after a Movie row wait for its end alone, while the rows under a clip follow its frames (Delay rows on the video
-// timeline, which does not go back).
+// The video a Movie or Clip row plays, for the host's controls: {kind: "movie" | "clip", time, duration, seekable, row}
+// (seconds of the video; row: the Index of that row) while the flow flags say one plays, else null. A playing video
+// can be seeked: a movie in place, as the rows after a Movie row wait for its end alone; a clip by a new session
+// started at its row and played on to the time (StorySession.fastForwardClip), as the rows under a clip follow its
+// frames (Delay rows on the video timeline, which does not go back).
 export const storyVideoPosition = (ctx) => {
   const v = storyVideo(ctx), cur = v && v.current;
   if (!cur || !v.isVideoPlaying) return null;
   const movie = v.flow.movieVideoPlaying && !v.flow.clipVideoPlaying;
-  return { kind: movie ? "movie" : "clip", time: cur.time, duration: cur.duration,
-           seekable: movie && cur.isPlaying() && !v.seekRespeeding };
+  return { kind: movie ? "movie" : "clip", time: cur.time, duration: cur.duration, row: cur.row,
+           seekable: cur.isPlaying() && !v.seekRespeeding && (movie || cur.row !== null) };
 };
 
-// the host's seek of the playing movie -> a promise of false when none can be seeked now, else of true once the
-// source shows the position (or the hold's limit has passed)
+// the host's seek of the playing movie -> a promise of false when none can be seeked in place now (a clip neither),
+// else of true once the source shows the position (or the hold's limit has passed)
 export const seekStoryVideo = (ctx, sec) => {
   const pos = storyVideoPosition(ctx);
-  if (!pos || !pos.seekable) return Promise.resolve(false);
+  if (!pos || !pos.seekable || pos.kind !== "movie") return Promise.resolve(false);
   return storyVideo(ctx).current.seekTo(sec).then(() => true);
 };
 

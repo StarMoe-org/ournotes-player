@@ -97,3 +97,17 @@ export const advViewport = (sw, sh) => {
 // the Talk rows that show a line (a valid AdvTextID, not IgnoreData), in order: the lines of seekToLine / `line`
 export const storyLines = (episode) =>
   episode.commands.filter((c) => c.cmd === "Talk" && !c.IgnoreData && c.AdvTextID && c.AdvTextID !== "0");
+
+// Where a session starts: at line `line` (clamped), or at the row of Index `row` (not IgnoreData) -> {line: the
+// lines before the start, shortCutIndex: the Index the game's shortcut runs to, -1 from the first row}
+export const storyStart = (episode, { line = 0, row = null } = {}) => {
+  const lines = storyLines(episode);
+  if (row === null || row === undefined) {
+    const l = Math.max(0, Math.min(line || 0, lines.length - 1));
+    return { line: l, shortCutIndex: l > 0 ? lines[l].i : -1 };
+  }
+  const at = episode.commands.findIndex((c) => c.i === row && !c.IgnoreData);
+  if (at < 0) throw new StoryCommandError(`no row ${row} to start at`);
+  const isLine = new Set(lines);
+  return { line: episode.commands.slice(0, at).filter((c) => isLine.has(c)).length, shortCutIndex: at > 0 ? row : -1 };
+};

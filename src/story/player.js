@@ -29,7 +29,8 @@ export class StoryPlayer extends EventTarget {
   //   filmGrain    multiplier of the film grain's intensity (true: 1, the game's; default none)
   //   line         start at this line (default 0)
   //   autoplay     play as soon as the story is loaded (audio may still wait for a user gesture)
-  //   controls     show the control bar (default true); uiLang: the control labels' language (default: lang)
+  //   controls     show the control bar (default true); uiLang: the control labels' language (default: the language
+  //                the story plays in, after a language switch too)
   //   voice        false: no voices; sound: false: no Web Audio (silent, same timing); volumes {Bgm, Se, Voice, Movie}
   //                (0..1; Movie: the videos' own sound)
   //   seed         seed of UnityEngine.Random (eye blinks, pseudo lip sync)
@@ -54,6 +55,8 @@ export class StoryPlayer extends EventTarget {
     this._speed = opts.speed || 10;
     this._volumes = { Bgm: 1, Se: 1, Voice: 1, ...(opts.volumes || {}) };
     this._lang = opts.lang || null;
+    this._uiLang = opts.uiLang || null;
+    this._clipSeek = null;
     this._abort = new AbortController();
     const doc = host.ownerDocument || document;
     const root = this.root = doc.createElement("div");
@@ -99,6 +102,7 @@ export class StoryPlayer extends EventTarget {
     if (o.assets) this.store = o.assets;
     else {
       this._manifest = await fetchStoryManifest(o.src, { fetch: o.fetch, signal });
+      this._labels();
       this.store = await this._loadStore(this._lang, signal);
     }
     if (this.disposed) throw abortError();
@@ -132,11 +136,14 @@ export class StoryPlayer extends EventTarget {
     });
   }
 
-  async _startSession(line, autoplay) {
+  // line: the line to start at; row: the Index of a row to start at instead (a clip seek), drawn once the caller has
+  // played on to its time (draw false)
+  async _startSession(line, autoplay, { row = null, draw = true } = {}) {
     const [w, h] = this._pixelSize();
     const o = this.opts;
     const session = await StorySession.create(this.gl, this.store, {
       lang: this._lang || undefined, quality: parseStoryQuality(o.quality), seed: o.seed, auto: this._auto, speed: this._speed, line,
+      row: row === null ? undefined : row,
       voice: o.voice, sound: this._audioContext ? undefined : false, audioContext: this._audioContext || null, autoplay,
       width: w, height: h, filmGrain: parseFilmGrain(o.filmGrain),
       onCommand: (c) => this._emit("command", { index: c.i, cmd: c.cmd }),
@@ -148,12 +155,19 @@ export class StoryPlayer extends EventTarget {
     if (this.disposed) { await session.dispose(); throw abortError(); }
     this.session = session;
     this._lang = session.lang;
-    this._startLine = Math.max(0, Math.min(line, session.lineCount - 1));
+    this._startLine = row === null ? Math.max(0, Math.min(line, session.lineCount - 1)) : Math.max(0, session.line);
     if (this._paused && session.setPaused) session.setPaused(true);          // its videos wait for the play
     for (const [cat, v] of Object.entries(this._volumes)) session.setVolume(cat, v);
     session.resize(w, h);
-    session.render();
+    if (draw) session.render();
+    this._labels();
     this._sync();
+  }
+
+  // the control labels: the host's language, else the one the story plays in (known from the manifest on)
+  _labels() {
+    const lang = this._uiLang || this._lang || (this._manifest ? this._manifest.manifest.language : null);
+    if (this.controls && lang) this.controls.setLanguage(lang);
   }
 
   // ------------------------------------------------------------------------------------------------ public API
@@ -168,7 +182,12 @@ export class StoryPlayer extends EventTarget {
   get lang() { return this._lang; }
   get languages() { return this._manifest ? Object.keys(this._manifest.manifest.languages) : [this._lang].filter(Boolean); }
   get info() { return this.store ? this.store.info : null; }
-  get video() { return (this.session && this.session.video) || null; }
+  // while a seek within a clip runs, the position it goes to
+  get video() {
+    const j = this._clipSeek;
+    if (j) return { kind: "clip", time: j.target, duration: j.duration, row: j.row, seekable: true };
+    return (this.session && this.session.video) || null;
+  }
 
   // starts the episode (the first call; call it from a user gesture so that audio may start) or resumes it
   play() {
@@ -234,17 +253,52 @@ export class StoryPlayer extends EventTarget {
     this._need();
     const n = this.session.lineCount, line = Math.max(0, Math.min(Math.trunc(i), n - 1));
     const playing = this.session.started;
+    this._stopClipSeek();
     await this._replace(async () => this._startSession(line, playing));
   }
 
-  // moves the playing movie to `sec` seconds of it (the player's own seek, as its pause) -> false when no video can be
-  // seeked now (`video.seekable`)
+  // moves the playing video to `sec` seconds of it (the player's own seek, as its pause) -> false when no video can be
+  // seeked now (`video.seekable`). A movie moves in place. A clip: a new session starts at the clip's row and plays on
+  // without drawing until the clip is at `sec` (StorySession.fastForwardClip), so that the rows under it are where
+  // they would be; a seek asked for meanwhile moves the target (one behind the time reached starts over), and the
+  // promise of the first resolves when the last is done.
   async seekVideo(sec) {
-    const s = this._need();
+    const job = this._clipSeek;
+    if (job) { job.target = Math.min(Math.max(0, Number(sec) || 0), job.duration); return job.done; }
+    const s = this._need(), pos = s.video;
+    if (pos && pos.seekable && pos.kind === "clip") return this._seekClip(pos, sec);
     if (typeof s.seekVideo !== "function" || !await s.seekVideo(sec)) return false;
     if (this._paused && this.session === s && !s.busy) s.render();           // no step follows while paused: draw now
     return true;
   }
+
+  _seekClip(pos, sec) {
+    const job = this._clipSeek = { target: Math.min(Math.max(0, Number(sec) || 0), pos.duration), duration: pos.duration,
+                                   row: pos.row, stop: false, done: null };
+    this._sync();
+    job.done = (async () => {
+      try {
+        for (let back = true; back && !job.stop;) {
+          back = false;
+          await this._replace(async () => {
+            await this._startSession(0, false, { row: job.row, draw: false });
+            const s = this.session;
+            ({ back } = await s.fastForwardClip(() => job.target, { paused: () => this._paused }));
+            if (this.session !== s) { back = false; return; }                   // replaced meanwhile
+            s.render();
+          });
+        }
+        return true;
+      } finally { this._clipSeek = null; this._sync(); }
+    })();
+    return job.done;
+  }
+
+  // a seek to a line or a language switch ends a seek within a clip (after the replacement running)
+  _stopClipSeek() { if (this._clipSeek) this._clipSeek.stop = true; }
+
+  // the control labels' language (null: the one the story plays in)
+  setUiLanguage(lang) { this._uiLang = lang || null; this._labels(); }
 
   // loads another language of the story and restarts at the current line (the session's start line while the
   // shortcut to it has not shown it yet: a seek before the first play)
@@ -253,18 +307,25 @@ export class StoryPlayer extends EventTarget {
     if (!this._manifest) throw new Error("StoryPlayer: setLanguage needs a story manifest (src)");
     const store = await this._loadStore(lang, this._abort.signal);
     const line = Math.max(0, this._startLine || 0, this.line), playing = this.session && this.session.started;
+    this._stopClipSeek();
     await this._replace(async () => { this.store = store; this._lang = lang; await this._startSession(line, playing); });
   }
 
+  // one replacement of the session at a time: a later one waits for the one running
   async _replace(fn) {
-    this._running = false;
-    if (this._raf) cancelAnimationFrame(this._raf);
-    const old = this.session;
-    this.session = null;
-    this._sync();
-    if (old) { try { if (old.busy) await old._stepping; } catch (_) { /* reported */ } await old.dispose(); }
-    try { await fn(); } catch (e) { this._fail(e); throw e; }
-    this._drive();
+    const prev = this._replacing;
+    const run = this._replacing = (async () => {
+      if (prev) await prev.catch(() => {});
+      this._running = false;
+      if (this._raf) cancelAnimationFrame(this._raf);
+      const old = this.session;
+      this.session = null;
+      this._sync();
+      if (old) { try { if (old.busy) await old._stepping; } catch (_) { /* reported */ } await old.dispose(); }
+      try { await fn(); } catch (e) { this._fail(e); throw e; }
+      this._drive();
+    })();
+    try { await run; } finally { if (this._replacing === run) this._replacing = null; }
   }
 
   // stops the player and removes it from the host; the WebGL context is released

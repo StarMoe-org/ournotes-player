@@ -12,7 +12,7 @@ import * as element from "ournotes-player/story/element";
 export async function useStoryPlayer(host: HTMLElement): Promise<string[]> {
   const player = await StoryPlayer.create(host, {
     src: "https://example.org/site/stories/10462.json", lang: "en", auto: true, speed: 15, quality: 4, line: 0,
-    controls: true, volumes: { Bgm: 0.5 },
+    controls: true, uiLang: "zh-TW", volumes: { Bgm: 0.5 },
     on: { line: (e) => console.log(e.detail.index, e.detail.text), error: (e) => console.error(e.detail.error) },
   });
   player.addEventListener("ended", (e: StoryPlayerEventMap["ended"]) => console.log(e.detail.reason));
@@ -26,7 +26,8 @@ export async function useStoryPlayer(host: HTMLElement): Promise<string[]> {
   player.setVolume("Movie", 0.5);
   await player.seekToLine(3);
   const video: StoryVideoPosition | null = player.video;
-  if (video && video.kind === "movie" && video.seekable) await player.seekVideo(video.duration / 2);
+  if (video && video.seekable) await player.seekVideo(video.kind === "clip" && video.row !== null ? video.duration / 2 : 0);
+  player.setUiLanguage(null);
   await player.setLanguage("zh-Hant");
   player.skip();
   const info: StoryManifestInfo | null = player.info;
@@ -49,6 +50,15 @@ export async function useStorySession(gl: WebGL2RenderingContext | null): Promis
     s.core.pressFastForward(15); s.core.pressAuto(false);
     s.core.subtitlesEnabled = false;
     s.core.setCurrentEpisodeListIndex(s.core.currentEpisodeListIndex + 1);
+    const pos = s.video;
+    if (pos && pos.kind === "clip" && pos.row !== null) {
+      const at = await StorySession.create(gl, store, { ...opts, row: pos.row, autoplay: false });
+      if (at instanceof StorySession) {
+        const { time, back } = await at.fastForwardClip(() => 12, { budgetMs: 8, paused: () => false });
+        console.log(time ?? -1, back);
+      }
+      await at.dispose();
+    }
   }
   else if (s instanceof SimpleStorySession) console.log(s.hostKind, s.missing.join(", "), SimpleStorySession.isSimpleStory(store));
   const vp = advViewport(1920, 1080);

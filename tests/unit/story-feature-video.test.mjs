@@ -191,7 +191,7 @@ test("Subtitles: a caption over a clip waits for the clip's end, then a tap (man
 });
 
 // ------------------------------------------------------------------------------------------------ the host's seek
-test("host seek: a playing movie moves forward and back and its row ends with it; a clip's position only shows", async () => {
+test("host seek: a playing movie moves forward and back and its row ends with it; a clip is not moved in place", async () => {
   const t = makePlayer([{ cmd: "Movie", VideoID: 11 }, { cmd: "Clip", VideoID: 12 }], { auto: false });
   await installStoryFeatures(t.ctx, t.p);
   assert.equal(storyVideoPosition(t.ctx), null);                          // prepared, not playing
@@ -214,11 +214,12 @@ test("host seek: a playing movie moves forward and back and its row ends with it
   const n = await settle(t.loop, run);
   assert.ok(n >= 10 && n <= 12, `${n}`);                                  // the rest of the 2 s from the start
   assert.equal(storyVideoPosition(t.ctx), null);                          // ended and faded out
-  // a clip: the position shows, a seek is refused (the rows under it follow its frames)
+  // a clip: seekable through a new session at its row (fastForwardClip), not in place (the rows under it follow its
+  // frames)
   await settle(t.loop, cmd(t, { cmd: "Clip", VideoID: 12, i: 1 }));
   await steps(t.loop, 6);
   const clip = storyVideoPosition(t.ctx), time = clip.time;
-  assert.deepEqual([clip.kind, clip.duration, clip.seekable], ["clip", 1, false]);
+  assert.deepEqual([clip.kind, clip.duration, clip.seekable, clip.row], ["clip", 1, true, 1]);
   assert.equal(await seekStoryVideo(t.ctx, 0.9), false);
   assert.equal(storyVideoPosition(t.ctx).time, time);
   disposeStoryFeatures(t.ctx);
@@ -329,6 +330,58 @@ test("the host's pause holds the loaded videos' elements and keeps the videos' o
   assert.equal(el.paused, true);                                          // ended, released by the next video's prepare
   disposeStoryFeatures(t.ctx);
 }));
+
+// a StorySession as fastForwardClip uses it, over the stand-in player: the script of rows is play()'s
+const clipSession = (t, script) => {
+  const ff = [];
+  return { ctx: t.ctx, opts: { row: 3 }, disposed: false, ended: false, ff, played: null,
+           audio: { setFastForward(on) { ff.push(on); } },
+           get frame() { return t.loop.frameCount; },
+           play() { this.played = this.played || script(); },
+           async step() { await t.loop.step(); await flush(); } };
+};
+
+test("a seek within a clip: the session plays on to the clip's time, every row under it as played, then goes on", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 11 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const rows = [];
+  const script = async () => {
+    await flush();
+    await cmd(t, { cmd: "Clip", VideoID: 11, i: 3 });
+    for (const [k, d] of [["a", 0.5], ["b", 0.5], ["c", 0.5]]) { await cmd(t, { cmd: "Delay", Duration: d, i: 4 }); rows.push(k); }
+  };
+  const s = clipSession(t, script), sv = storyVideo(t.ctx);
+  let yields = 0;
+  const r = await StorySession.prototype.fastForwardClip.call(s, () => 1.2,
+    { budgetMs: 0, pause: async () => { yields++; } });
+  const clip = sv.current;
+  assert.deepEqual([r.back, clip.row, rows], [false, 3, ["a", "b"]]);               // 1.0 s of Delay rows on its frames
+  assert.ok(Math.abs(r.time - 1.2) < 1e-6 && clip.time === r.time, `${r.time}`);
+  assert.deepEqual([s.ff, sv.held, yields > 0], [[true, false], false, true]);
+  assert.deepEqual(storyVideoPosition(t.ctx), { kind: "clip", time: clip.time, duration: 2, row: 3, seekable: true });
+  // it goes on from there as played
+  await steps(t.loop, 12);
+  assert.deepEqual(rows, ["a", "b", "c"]);
+  disposeStoryFeatures(t.ctx);
+});
+
+test("a seek within a clip stops for a seek back, and at the clip's end; it holds the videos as the player is paused", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 12 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const s = clipSession(t, async () => { await flush(); await cmd(t, { cmd: "Clip", VideoID: 12, i: 3 }); });
+  let want = 0.9, n = 0;
+  const back = await StorySession.prototype.fastForwardClip.call(s, () => { if (++n === 20) want = 0.1; return want; },
+    { budgetMs: Infinity });
+  assert.equal(back.back, true);
+  assert.ok(back.time > 0.1 && back.time < 0.9, `${back.time}`);
+  disposeStoryFeatures(t.ctx);
+  const t2 = makePlayer([{ cmd: "Clip", VideoID: 12 }]);
+  await installStoryFeatures(t2.ctx, t2.p);
+  const s2 = clipSession(t2, async () => { await flush(); await cmd(t2, { cmd: "Clip", VideoID: 12, i: 3 }); });
+  const end = await StorySession.prototype.fastForwardClip.call(s2, () => 5, { budgetMs: Infinity, paused: () => true });
+  assert.deepEqual([end.time, end.back, storyVideo(t2.ctx).held], [1, false, true]);   // the 1 s clip ended first
+  disposeStoryFeatures(t2.ctx);
+});
 
 test("the skip confirmation pauses a playing video and resumes it; the playback's stop stops every loaded video", async () => {
   const t = makePlayer([{ cmd: "Clip", VideoID: 11 }, { cmd: "Movie", VideoID: 12 }], { auto: false });

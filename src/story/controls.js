@@ -1,17 +1,19 @@
 import { storyStrings } from "./strings.js";
 import { SimpleStorySession } from "./simple/session.js";
 
-// Control bar of a StoryPlayer, with visible labels in the page's language. The story menu's items with the game's
-// semantics (AdvPlayerUIEventHandler): Auto, Fast-forward (×1 -> ×1.5 -> ×1.7 -> ×2 -> ×1; a speed other than ×1 turns
-// auto on, turning auto off resets it to ×1), Skip (with its confirmation; the playback and a playing video wait while
-// it is open) and the next button (a tap on the story screen, as a click on the story itself); the app's music, sound
-// effect and voice volumes (a video's own sound has no volume option in the game). Apart from them, the player's own
-// items: play / pause, and the position: the line with its bar (a seek restarts at that line, StoryPlayer.seekToLine)
-// and, while a Movie or Clip row plays a video, the video's time with a bar of its own (a movie can be seeked; a clip's
-// bar only shows, as the rows under a clip follow its frames). The bars are range inputs (arrow keys, Home / End); they
-// rest while the skip confirmation is open. Keyboard (while the player has the focus): Space / Enter next, A auto, F
-// fast-forward, K play / pause. Every element lives in the player's shadow root. An Overlay episode (the simple player:
-// no auto button, no fast-forward) shows neither Auto nor Fast-forward.
+// Control bar of a StoryPlayer, with visible labels in the language the story plays in (or one the host sets,
+// setLanguage). The story menu's items with the game's semantics (AdvPlayerUIEventHandler): Auto, Fast-forward
+// (×1 -> ×1.5 -> ×1.7 -> ×2 -> ×1; a speed other than ×1 turns auto on, turning auto off resets it to ×1), Skip (with its
+// confirmation; the playback and a playing video wait while it is open) and the next button (a tap on the story
+// screen, as a click on the story itself); the app's music, sound effect and voice volumes (a video's own sound has no
+// volume option in the game). Apart from them, the player's own items: play / pause, and the position: the line with
+// its bar (a seek restarts at that line, StoryPlayer.seekToLine) and, while a Movie or Clip row plays a video, the
+// video's time with a bar of its own (StoryPlayer.seekVideo: a movie moves in place; a clip's seek restarts at its row
+// and plays on to the time, as the rows under a clip follow its frames; the bar shows the target meanwhile and the
+// line bar rests). The bars are range inputs (arrow keys, Home / End); they rest while the skip confirmation is open.
+// Keyboard (while the player has the focus): Space / Enter next, A auto, F fast-forward, K play / pause. Every element
+// lives in the player's shadow root. An Overlay episode (the simple player: no auto button, no fast-forward) shows
+// neither Auto nor Fast-forward.
 
 export const STORY_PLAYER_CSS = `
 :host { all: initial; visibility: inherit; }   /* hidden with its host element */
@@ -56,42 +58,41 @@ export class StoryControls {
   constructor(player, { lang } = {}) {
     this.player = player;
     const doc = player.root.ownerDocument;
-    const t = this.t = storyStrings(lang || (doc.documentElement && doc.documentElement.lang) || "en");
+    this.pageLang = (doc.documentElement && doc.documentElement.lang) || "";
     const el = (tag, cls, props = {}) => { const e = doc.createElement(tag); e.className = cls; Object.assign(e, props); return e; };
     const bar = this.bar = el("div", "bar");
-    this.btnPlay = el("button", "btn play", { type: "button", textContent: t.pause });
-    this.btnNext = el("button", "btn next", { type: "button", textContent: t.next });
-    this.btnAuto = el("button", "btn auto", { type: "button", textContent: t.auto });
+    this.btnPlay = el("button", "btn play", { type: "button" });
+    this.btnNext = el("button", "btn next", { type: "button" });
+    this.btnAuto = el("button", "btn auto", { type: "button" });
     this.btnSpeed = el("button", "btn speed", { type: "button" });
-    this.btnSkip = el("button", "btn skip", { type: "button", textContent: t.skip });
+    this.btnSkip = el("button", "btn skip", { type: "button" });
     this.confirm = el("span", "field confirm", { hidden: true });
-    this.btnSkipYes = el("button", "btn", { type: "button", textContent: t.skip });
-    this.btnSkipNo = el("button", "btn", { type: "button", textContent: t.cancel });
-    this.confirm.append(el("span", "", { textContent: t.skipConfirm }), this.btnSkipYes, this.btnSkipNo);
+    this.confirmText = el("span", "");
+    this.btnSkipYes = el("button", "btn", { type: "button" });
+    this.btnSkipNo = el("button", "btn", { type: "button" });
+    this.confirm.append(this.confirmText, this.btnSkipYes, this.btnSkipNo);
     this.pos = el("span", "pos");
     const track = el("span", "track");
-    const range = (label) => {
-      const r = el("input", "seek", { type: "range", min: "0", max: "0", step: "1", value: "0", disabled: true });
-      r.setAttribute("aria-label", label);
-      return r;
-    };
-    this.seek = range(t.position);
+    const range = () => el("input", "seek", { type: "range", min: "0", max: "0", step: "1", value: "0", disabled: true });
+    this.seek = range();
     this.vid = el("span", "field vid", { hidden: true });
     this.vidTime = el("span", "pos");
-    this.vidSeek = range(t.video);
+    this.vidSeek = range();
     this.vidSeek.step = "any";
     this.vid.append(this.vidTime, this.vidSeek);
     track.append(this.seek, this.vid);
     this.vols = {};
+    this.volLabels = {};
     const vols = [];
-    for (const [cat, label] of [["Bgm", t.music], ["Se", t.effects], ["Voice", t.voice]]) {
-      const f = el("label", "field", { textContent: label });
+    for (const cat of ["Bgm", "Se", "Voice"]) {
+      const f = el("label", "field"), name = el("span", "");
       const r = el("input", "vol", { type: "range", min: "0", max: "1", step: "0.05", value: "1" });
-      f.append(r); vols.push(f); this.vols[cat] = r;
+      f.append(name, r); vols.push(f); this.vols[cat] = r; this.volLabels[cat] = name;
     }
     bar.append(this.btnNext, this.btnAuto, this.btnSpeed, this.btnSkip, this.confirm, track, this.btnPlay, this.pos, ...vols);
-    this.big = el("button", "big", { type: "button", textContent: t.start, hidden: true });
+    this.big = el("button", "big", { type: "button", hidden: true });
     player.shadow.append(bar, this.big);
+    this._label(lang);
 
     const on = (target, type, fn) => { target.addEventListener(type, fn); this._off.push(() => target.removeEventListener(type, fn)); };
     this._off = [];
@@ -101,6 +102,7 @@ export class StoryControls {
     this._seeking = null;
     this._lineCount = 0;
     this._session = null;
+    this._videoSeeks = 0;               // seeks within a video running (a clip's replaces the session)
     const focus = () => player.root.focus({ preventScroll: true });
     on(this.btnPlay, "click", () => { focus(); if (player.paused) player.play(); else player.pause(); });
     on(this.btnNext, "click", () => { focus(); player.next(); });
@@ -159,6 +161,25 @@ export class StoryControls {
   // shows "click to start" until the first play (audio needs a user gesture)
   showStart(on) { this.big.hidden = !on; }
 
+  // the labels in a language: a code of the story languages or a BCP 47 tag (storyStrings); none given: the page's
+  // language, else English
+  setLanguage(lang) {
+    if (this._label(lang)) this.update();
+  }
+
+  _label(lang) {
+    const t = storyStrings(lang || this.pageLang || "en");
+    if (t === this.t) return false;
+    this.t = t;
+    this.btnNext.textContent = t.next; this.btnAuto.textContent = t.auto; this.btnSkip.textContent = t.skip;
+    this.btnSkipYes.textContent = t.skip; this.btnSkipNo.textContent = t.cancel; this.confirmText.textContent = t.skipConfirm;
+    this.volLabels.Bgm.textContent = t.music; this.volLabels.Se.textContent = t.effects; this.volLabels.Voice.textContent = t.voice;
+    this.big.textContent = t.start;
+    this.seek.setAttribute("aria-label", t.position);
+    this.vidSeek.setAttribute("aria-label", t.video);
+    return true;
+  }
+
   // restarts at line i (StoryPlayer.seekToLine: playing or not as before); a seek asked for while one runs replaces
   // the one waiting after it
   seekLine(i) {
@@ -181,17 +202,20 @@ export class StoryControls {
     } finally { this._want = null; this._seeking = null; this.update(); }
   }
 
-  // moves the playing movie to `sec` seconds (StoryPlayer.seekVideo)
+  // moves the playing video to `sec` seconds (StoryPlayer.seekVideo; a seek within a clip restarts the session and
+  // shows its target meanwhile)
   seekVideo(sec) {
     const p = this.player;
-    if (!p.session) return Promise.resolve(false);
-    return p.seekVideo(sec).catch(() => false).then((ok) => { this.tick(); return ok; });
+    if (!p.video) return Promise.resolve(false);
+    this._videoSeeks++;
+    return p.seekVideo(sec).catch(() => false).then((ok) => { this._videoSeeks--; this.update(); return ok; });
   }
 
   // the line the bar shows: a seek's line from the request until its session shows that line
   _line() {
     const p = this.player, g = this._goal;
     if (this._want !== null) return this._want;
+    if (!p.session && this._videoSeeks > 0) return Number(this.seek.value);   // a clip's seek replacing the session
     if (g && (g.session === undefined || (g.session === p.session && !p.ended && p.line < g.line))) return g.line;
     return Math.max(0, p.line);
   }
@@ -217,10 +241,11 @@ export class StoryControls {
     const live = !!p.session && !p.ended;
     for (const b of [this.btnNext, this.btnAuto, this.btnSpeed, this.btnSkip]) b.disabled = !live;
     this.btnAuto.hidden = this.btnSpeed.hidden = this._simple();
-    // the line bar; the story's line count stays while a seek replaces the session
-    const n = this._lineCount = p.lineCount || (this._seeking ? this._lineCount : 0), last = Math.max(0, n - 1);
+    // the line bar; the story's line count stays while a seek replaces the session; it rests while a video seeks
+    const seeking = !!this._seeking || this._videoSeeks > 0;
+    const n = this._lineCount = p.lineCount || (seeking ? this._lineCount : 0), last = Math.max(0, n - 1);
     this.seek.max = String(last);
-    this.seek.disabled = n < 2 || !this.confirm.hidden || (!p.session && !this._seeking);
+    this.seek.disabled = n < 2 || !this.confirm.hidden || this._videoSeeks > 0 || (!p.session && !seeking);
     if (this._drag !== this.seek) { const i = Math.min(this._line(), last); this.seek.value = String(i); this._showLine(i); }
     this.tick();
   }

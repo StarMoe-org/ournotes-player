@@ -1,6 +1,7 @@
-// The story control bar's position (controls.js) on a stand-in DOM and a stand-in player: the line bar and its
-// label, a seek from the bar (coalesced while one runs, its line shown until the new session reaches it), the skip
-// confirmation, and the video bar (a movie seeks, a clip only shows). Synthetic inputs only.
+// The story control bar (controls.js) on a stand-in DOM and a stand-in player: the line bar and its label, a seek
+// from the bar (coalesced while one runs, its line shown until the new session reaches it), the skip confirmation,
+// the video bar (a movie or a clip seeks on change, a video that cannot be seeked only shows; the line bar rests while
+// a clip's seek replaces the session), and the labels' language. Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { StoryControls, formatStoryTime } from "../../src/story/controls.js";
@@ -127,7 +128,7 @@ test("a seek from the bar while the skip confirmation is open is not possible; a
   assert.deepEqual([p.session.core.isPause, c.seek.disabled], [false, false]);
 });
 
-test("the video bar: the time of a playing video; a movie seeks on change, a clip's bar only shows; hidden without one", async () => {
+test("the video bar: the time of a playing video; a movie seeks on change, one that cannot be seeked only shows; hidden without one", async () => {
   const p = fakePlayer(), c = p.controls;
   assert.equal(c.vid.hidden, true);
   p.video = { kind: "movie", time: 12.4, duration: 109.2, seekable: true };
@@ -157,6 +158,48 @@ test("the video bar: the time of a playing video; a movie seeks on change, a cli
   p.video = null;
   c.tick();
   assert.equal(c.vid.hidden, true);
+});
+
+test("the video bar of a clip: a change seeks it; the line bar rests at its line while the session is replaced", async () => {
+  const p = fakePlayer(), c = p.controls;
+  let finish;
+  const run = new Promise((res) => { finish = res; });
+  p.seekVideo = function (sec) { this.videoSeeks.push(sec); return run; };   // StoryPlayer: every seek of the run ends with it
+  p.session.line = 4;
+  p.video = { kind: "clip", time: 3, duration: 20, row: 7, seekable: true };
+  c.update();
+  assert.equal(c.vidSeek.disabled, false);
+  c.vidSeek.value = "12"; c.vidSeek.fire("change");
+  p.session = null; p.video = { ...p.video, time: 12 }; c.update();       // the session replaced, the target shown
+  assert.deepEqual([c.seek.disabled, c.seek.value, c.seek.max, c.vidSeek.disabled, c.vidSeek.value], [true, "4", "9", false, "12"]);
+  c.vidSeek.value = "8"; c.vidSeek.fire("change");                       // another while it runs: the player moves the target
+  assert.deepEqual(p.videoSeeks, [12, 8]);
+  p.session = p.newSession(5); p.video = { ...p.video, time: 8 };
+  finish(true);
+  await flush();
+  assert.deepEqual([c.seek.disabled, c.seek.value, c.vidSeek.value], [false, "5", "8"]);
+  p.video = null;
+  assert.equal(await c.seekVideo(3), false);                              // no video: nothing to seek
+  assert.deepEqual(p.videoSeeks, [12, 8]);
+});
+
+test("the labels: a story language or a BCP 47 tag, relabeled in place; an unknown code as storyStrings, none the page's", () => {
+  const p = fakePlayer(), c = p.controls;
+  const labels = () => [c.btnNext.textContent, c.btnSkipNo.textContent, c.volLabels.Bgm.textContent, c.big.textContent,
+                        c.seek.getAttribute("aria-label"), c.btnSpeed.textContent, c.pos.textContent];
+  assert.deepEqual(labels(), ["Next", "Cancel", "Music", "Click to start", "Position", "Fast-forward ×1", "Line 1 / 10"]);
+  c.setLanguage("zh-Hant");
+  assert.deepEqual(labels(), ["下一句", "取消", "音樂", "點擊開始", "播放位置", "快轉 ×1", "台詞 1 / 10"]);
+  c.setLanguage("ja-JP");
+  assert.equal(c.btnNext.textContent, "次へ");
+  c.setLanguage("zh-CN");
+  assert.equal(c.btnNext.textContent, "下一句");
+  assert.equal(c.volLabels.Bgm.textContent, "音乐");
+  c.setLanguage("xx");
+  assert.equal(c.btnNext.textContent, "Next");
+  p.root.ownerDocument.documentElement.lang = "ko";
+  const k = new StoryControls(p, {});
+  assert.equal(k.btnNext.textContent, "다음");                           // none given: the page's language
 });
 
 test("video times as m:ss", () => {
