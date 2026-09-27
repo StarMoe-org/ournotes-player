@@ -16,10 +16,11 @@ import { StoryPlayer } from "./player.js";
 //   line         start at this line (0-based), read when the story loads
 //   volume-bgm, volume-se, volume-voice   0..1
 //   no-voice     play without voices (boolean), read when the story loads
-// Methods and properties as StoryPlayer: play(), pause(), next(), skip(), seekToLine(i), setVolume(category, v), line,
-// lineCount, speaker, text, ended, languages, plus `player` (the StoryPlayer, null until loaded) and `ready` (a promise
-// of the StoryPlayer of the current src). Events (not bubbling): ready, error, progress, play, pause, line, command,
-// ended; `detail` as StoryPlayer's. The element is display: block and 13:6 at its width unless given a height.
+// Methods and properties as StoryPlayer: play(), pause(), next(), skip(), seekToLine(i), seekVideo(sec),
+// setVolume(category, v), line, lineCount, speaker, text, ended, languages, video, plus `player` (the StoryPlayer, null
+// until loaded) and `ready` (a promise of the StoryPlayer of the current src). Events (not bubbling): ready, error,
+// progress, play, pause, line, command, ended; `detail` as StoryPlayer's. The element is display: block and 13:6 at its
+// width unless given a height.
 
 const EVENTS = ["ready", "error", "progress", "play", "pause", "line", "command", "ended"];
 const OFF = new Set(["off", "false", "0", "no"]);
@@ -68,6 +69,7 @@ export class OurnotesStoryElement extends Base {
   get ended() { return !!this.player && this.player.ended; }
   get languages() { return this.player ? this.player.languages : []; }
   get info() { return this.player ? this.player.info : null; }
+  get video() { return this.player ? this.player.video : null; }
   get ready() { return this._ready; }
 
   async play() { (await this._ready).play(); }
@@ -75,6 +77,7 @@ export class OurnotesStoryElement extends Base {
   async next() { (await this._ready).next(); }
   async skip() { (await this._ready).skip(); }
   async seekToLine(i) { return (await this._ready).seekToLine(i); }
+  async seekVideo(sec) { return (await this._ready).seekVideo(sec); }
   async setVolume(category, v) { (await this._ready).setVolume(category, v); }
 
   _flag(name, dflt) {

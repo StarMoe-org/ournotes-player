@@ -20,6 +20,7 @@ import { AdvStageData } from "./stage.js";
 import { disposeStoryFeatures, installStoryFeatures, setStoryFeaturesSpeed } from "./features/index.js";
 import { StoryUI } from "./ui.js";
 import { AnimRecords } from "./features/clips.js";
+import { seekStoryVideo, storyVideoPosition } from "./features/video.js";
 
 // StorySession: one story episode (ADV) of the game played on a WebGL2 context, or headless with gl = null (Node:
 // tests, read sets). It has no DOM access: the caller calls step() at 30 steps per second of game time (StoryPlayer
@@ -293,6 +294,8 @@ export class StorySession {
   get speed() { return this.core.playbackSpeed; }
   get started() { return !!this._started; }
   get busy() { return !!this._stepping; }
+  // the video a Movie or Clip row plays: {kind: "movie" | "clip", time, duration, seekable} (seconds), else null
+  get video() { return this.ctx ? storyVideoPosition(this.ctx) : null; }
 
   // ------------------------------------------------------------------------------------------------ requests
   // starts the episode at the next frame's Update (the UniTask timing a command resumes at)
@@ -309,6 +312,9 @@ export class StorySession {
   skip() { this.core.stop(1); }
   // user volume of a sound category ("Bgm", "Se", "Voice"): the option volume ("<Cat>Config"), 0..1
   setVolume(category, v) { if (this.audio.setOptionVolume) this.audio.setOptionVolume(category, v); }
+  // moves the playing movie to `sec` seconds of it (a seek of the host's; the game has none): the rows after a Movie
+  // row wait for its end alone. -> a promise of false when no video can be seeked now (`video.seekable`)
+  seekVideo(sec) { return this.ctx ? seekStoryVideo(this.ctx, sec) : Promise.resolve(false); }
 
   // ------------------------------------------------------------------------------------------------ frames
   // One frame of game time (1/30 s), drawn unless draw is false. No step may start while one runs.

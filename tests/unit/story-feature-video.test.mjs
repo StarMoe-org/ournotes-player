@@ -10,7 +10,7 @@ import { commandHandler, createStoryUILayers } from "../../src/story/interfaces.
 import { delayWithPauseSpeedAdjustment } from "../../src/story/commands/misc.js";
 import { disposeStoryFeatures, installStoryFeatures, setStoryFeaturesSpeed } from "../../src/story/features/index.js";
 import { calcVideoRealDuration, delayWithSpeedAdjustment } from "../../src/story/features/timing.js";
-import { delayUntilVideoTimeline, storyVideo } from "../../src/story/features/video.js";
+import { VideoInfo, delayUntilVideoTimeline, seekStoryVideo, storyVideo, storyVideoPosition } from "../../src/story/features/video.js";
 import { headlessGL } from "../../scripts/lib/headless.mjs";
 
 const flush = () => new Promise((res) => setImmediate(res));
@@ -184,6 +184,76 @@ test("Subtitles: a caption over a clip waits for the clip's end, then a tap (man
   await settle(t.loop, cmd(t, { cmd: "Subtitles", i: 2 }));
   assert.ok(t.calls.some((c) => c[0] === "clearSubtitles"));
   disposeStoryFeatures(t.ctx);
+});
+
+// ------------------------------------------------------------------------------------------------ the host's seek
+test("host seek: a playing movie moves forward and back and its row ends with it; a clip's position only shows", async () => {
+  const t = makePlayer([{ cmd: "Movie", VideoID: 11 }, { cmd: "Clip", VideoID: 12 }], { auto: false });
+  await installStoryFeatures(t.ctx, t.p);
+  assert.equal(storyVideoPosition(t.ctx), null);                          // prepared, not playing
+  assert.equal(await seekStoryVideo(t.ctx, 1), false);
+  let done = false;
+  const run = cmd(t, { cmd: "Movie", VideoID: 11, i: 0 });
+  run.then(() => { done = true; });
+  await steps(t.loop, 10);
+  const at = storyVideoPosition(t.ctx);
+  assert.deepEqual([at.kind, at.duration, at.seekable], ["movie", 2, true]);
+  assert.ok(at.time > 0.25 && at.time < 0.4, `${at.time}`);
+  assert.equal(await seekStoryVideo(t.ctx, 1.5), true);                   // forward: 0.5 s left
+  assert.equal(storyVideoPosition(t.ctx).time, 1.5);
+  await steps(t.loop, 10);
+  assert.equal(done, false);
+  assert.equal(await seekStoryVideo(t.ctx, -3), true);                    // back, clamped to the start
+  assert.equal(storyVideoPosition(t.ctx).time, 0);
+  await steps(t.loop, 50);
+  assert.equal(done, false);
+  const n = await settle(t.loop, run);
+  assert.ok(n >= 10 && n <= 12, `${n}`);                                  // the rest of the 2 s from the start
+  assert.equal(storyVideoPosition(t.ctx), null);                          // ended and faded out
+  // a clip: the position shows, a seek is refused (the rows under it follow its frames)
+  await settle(t.loop, cmd(t, { cmd: "Clip", VideoID: 12, i: 1 }));
+  await steps(t.loop, 6);
+  const clip = storyVideoPosition(t.ctx), time = clip.time;
+  assert.deepEqual([clip.kind, clip.duration, clip.seekable], ["clip", 1, false]);
+  assert.equal(await seekStoryVideo(t.ctx, 0.9), false);
+  assert.equal(storyVideoPosition(t.ctx).time, time);
+  disposeStoryFeatures(t.ctx);
+});
+
+test("host seek: the video's clock holds until its source shows the position, at most 30 updates", async () => {
+  let pending = null;
+  const source = { setSpeed() {}, sync() {}, seek(time, done) { pending = done; }, release() {} };
+  const v = new VideoInfo(1, 11, video(11, 300), source), dt = 1 / 30;
+  v.play();
+  v.advance(dt);
+  assert.equal(v.time, dt);
+  let ended = 0;
+  v.seekTo(4).then(() => { ended++; });
+  for (let i = 0; i < 5; i++) v.advance(dt);
+  assert.equal(v.time, 4);                                                // held
+  pending();
+  await flush();
+  assert.equal(ended, 1);
+  v.advance(dt);
+  assert.equal(v.time, 4 + dt);
+  // a source that does not report: the clock goes on after 30 updates
+  v.seekTo(2).then(() => { ended++; });
+  for (let i = 0; i < 29; i++) v.advance(dt);
+  await flush();
+  assert.deepEqual([v.time, ended], [2, 1]);
+  v.advance(dt);
+  await flush();
+  assert.deepEqual([v.time, ended], [2, 2]);
+  v.advance(dt);
+  assert.equal(v.time, 2 + dt);
+  // a later seek ends the earlier one's wait; a release ends a waiting seek; the end of the video is the limit
+  v.seekTo(1).then(() => { ended++; });
+  v.seekTo(99).then(() => { ended++; });
+  await flush();
+  assert.deepEqual([v.time, ended], [10, 3]);
+  v.release();
+  await flush();
+  assert.equal(ended, 4);
 });
 
 // ------------------------------------------------------------------------------------------------ seek re-speed

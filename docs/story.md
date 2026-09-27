@@ -63,10 +63,10 @@ global `OurnotesStory`), each with a `.min.js` and source maps. Types: `types/st
 | `no-voice` | Play without voices (boolean), read when the story loads. |
 
 Properties `src`, `lang`, `auto`, `speed` reflect the attributes; `line`, `lineCount`, `speaker`, `text`, `ended`,
-`languages`, `info` and the methods `play()`, `pause()`, `next()`, `skip()`, `seekToLine(i)`, `setVolume(category, v)`
-are `StoryPlayer`'s (below), plus `player` (the `StoryPlayer`, `null` until loaded) and `ready` (a promise of it).
-Events (not bubbling) as `StoryPlayer`'s. The element is `display: block` and 13:6 at its width unless the page gives
-it a height.
+`languages`, `info`, `video` and the methods `play()`, `pause()`, `next()`, `skip()`, `seekToLine(i)`, `seekVideo(sec)`,
+`setVolume(category, v)` are `StoryPlayer`'s (below), plus `player` (the `StoryPlayer`, `null` until loaded) and
+`ready` (a promise of it). Events (not bubbling) as `StoryPlayer`'s. The element is `display: block` and 13:6 at its
+width unless the page gives it a height.
 [examples/story/](../examples/story/) is such a page: it plays `stories/<advId>.json` of a site (`?story=<advId>`) or
 the manifest named by `?src=`, with Live2D's two files from `?core=` and `?motionsync=`.
 
@@ -95,10 +95,12 @@ keeps its timing silently), `volumes` (`{Bgm, Se, Voice}`), `seed`, `fetch`, `si
 | `setSpeed(s)` | The story menu's fast-forward button set to `s` (10, 15, 17, 20): a speed other than ×1 turns auto on, ×1 brings back the player's own auto choice. |
 | `skip()` | The game's skip: the playback stops without the closing rows (`AdvPlayer.Skip`). |
 | `seekToLine(i)` | Restarts at line `i` with the game's shortcut (below). |
+| `seekVideo(sec)` | Moves the playing movie to `sec` seconds of it (the player's own seek, as its pause; the game has none). Resolves to `false` when no video can be seeked now. |
 | `setLanguage(lang)` | Loads another language of the story and restarts at the current line. |
 | `setVolume(category, v)` | `"Bgm"`, `"Se"` or `"Voice"`, 0–1. |
 | `line`, `lineCount`, `speaker`, `text` | The current line (-1 before the first), the number of lines, the current speaker and text (TMP rich text as in the story data, tags included). |
 | `auto`, `speed`, `paused`, `ended`, `lang`, `languages`, `info` | State; `info` is the story manifest without its file lists. |
+| `video` | While a Movie or Clip row plays a video, `{kind, time, duration, seekable}` (`"movie"` or `"clip"`, seconds of the video), else `null`. Only a playing movie is `seekable`: the rows after a Movie row wait for its end alone, while the rows under a clip follow its frames (Delay rows on the video timeline, which does not go back). |
 | `dispose()` | Stops the player, releases its WebGL context and removes it from the host. |
 
 Events: `progress` `{loaded, total}` (bytes while loading), `ready`, `play`, `pause`, `line`
@@ -111,7 +113,10 @@ subtitles and chat rows, also those before the start line; `speaker` is `null` f
 
 The story menu's items with the game's behaviour and visible labels in the story's language (or `uiLang`): Next, Auto,
 Fast-forward (×1 → ×1.5 → ×1.7 → ×2 → ×1), Skip (with a confirmation; the playback waits while it is open), and the
-music, sound effect and voice volumes. Apart from them, the player's own items: play / pause and the line position.
+music, sound effect and voice volumes. Apart from them, the player's own items: play / pause and the position. The
+position is the line with its bar: moving the bar restarts at that line (`seekToLine`), playing or not as before. While
+a Movie or Clip row plays a video, a second bar shows the video's time; on a movie it seeks (`seekVideo`), on a clip it
+only shows. The bars are range inputs (arrow keys, Home / End) and rest while the skip confirmation is open.
 Keyboard, while the player has the focus: Space or Enter next, A auto, F fast-forward, K play / pause. An Overlay
 episode (the simple story player has no auto button and no fast-forward) shows neither Auto nor Fast-forward.
 
@@ -133,10 +138,10 @@ merges the manifest's common files with one language group). Options: `lang`, `q
 `sound`, `audioContext`, `title`, `autoplay`, `onCommand`, `onLine`, `onLog`, `onEnded`, `onLoaded`, `width`, `height`;
 `ui` and `audio` replace the story UI and the sound manager (tests).
 
-Methods: `play()`, `tap()`, `setAuto(on)`, `setSpeed(s)`, `skip()`, `setVolume(category, v)`, `step({draw})`,
-`resize(w, h)`, `render()`, `dispose()`; state: `time`, `frame`, `line`, `lineCount`, `speaker`, `text`, `isAuto`,
-`speed`, `started`, `ended`, `endReason`. `StorySession.requirements(store)` lists the commands the episode executes
-and those this player does not support.
+Methods: `play()`, `tap()`, `setAuto(on)`, `setSpeed(s)`, `skip()`, `setVolume(category, v)`, `seekVideo(sec)`,
+`step({draw})`, `resize(w, h)`, `render()`, `dispose()`; state: `time`, `frame`, `line`, `lineCount`, `speaker`, `text`,
+`isAuto`, `speed`, `started`, `ended`, `endReason`, `video`. `StorySession.requirements(store)` lists the commands the
+episode executes and those this player does not support.
 
 ## Seek
 

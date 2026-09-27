@@ -22,6 +22,7 @@ export const CRI_STATUS = Object.freeze({ Stop: 0, Dechead: 1, WaitPrep: 2, Prep
 const MAX_VIDEO_LOAD_TASK = 2;                // AdvEpisodeResourceLoader.MaxVideoLoadTask
 const MAX_SPEED = 3;                          // VideoInfo.ChangePlaybackSpeed cap
 const STALL_SECONDS = 5;                      // AdvVideoTimeline stall limit
+const SEEK_HOLD_UPDATES = 30;                 // the host's seek: the clock holds for the source at most 1 s
 export const TIMELINE = Object.freeze({ Reached: 0, Waiting: 1, Aborted: 2 });
 // AdvVideoCommandHelper constants of the seek re-speed
 const FAST_FORWARD_MAX_FRAME_DROP = 3, SEEK_RESPEED_FREEZE_ALPHA = F(0.7), SEEK_RESPEED_MASK_ALPHA = 0;
@@ -52,6 +53,7 @@ export class VideoInfo {
     this.maxFrameDrop = null;                // CriMana.Player.SetMaxFrameDrop (not read here: this clock drops no frame)
     this.onPlayFinished = [];
     this.source = source;                    // null once released
+    this.seekHold = 0; this._seekEnd = null;  // the host's seek (seekTo)
   }
 
   isPlaying() { return this.status === CRI_STATUS.Playing; }
@@ -84,6 +86,19 @@ export class VideoInfo {
   prepare() { if (this.source && this.status === CRI_STATUS.Stop) this.status = CRI_STATUS.Ready; }
   pause(on) { this.paused = !!on; if (this.source) this.source.sync(this); }
 
+  // The host's seek (the player's controls; the game shows no seek bar on a video): the clock jumps to `sec` and
+  // holds until the source shows that position, at most SEEK_HOLD_UPDATES updates. -> a promise, resolved then
+  seekTo(sec) {
+    if (!this.source) return Promise.resolve();
+    this.time = Math.min(Math.max(0, Number(sec) || 0), this.duration);
+    if (this._seekEnd) this._seekEnd();                   // an earlier seek's promise ends here
+    return new Promise((res) => {
+      const end = this._seekEnd = () => { if (this._seekEnd === end) { this._seekEnd = null; this.seekHold = 0; } res(); };
+      this.seekHold = SEEK_HOLD_UPDATES;
+      this.source.seek(this.time, end);
+    });
+  }
+
   // CriMana.Player.GetDisplayedFrameNo: -1 before the first frame
   displayedFrameNo() {
     if (this.status !== CRI_STATUS.Playing && this.status !== CRI_STATUS.PlayEnd) return -1;
@@ -92,6 +107,7 @@ export class VideoInfo {
 
   advance(dt) {
     if (this.status !== CRI_STATUS.Playing || this.paused || !this.source) return;
+    if (this.seekHold > 0) { if (--this.seekHold === 0 && this._seekEnd) this._seekEnd(); return; }
     this.time += dt * this.speed;
     if (this.time >= this.duration) { this.time = this.duration; this.status = CRI_STATUS.PlayEnd; }
     this.source.sync(this);
@@ -105,11 +121,15 @@ export class VideoInfo {
     for (const f of fs) f();
   }
 
-  release() { if (this.source) this.source.release(); this.source = null; this.status = CRI_STATUS.Stop; }
+  release() {
+    if (this.source) this.source.release();
+    this.source = null; this.status = CRI_STATUS.Stop;
+    if (this._seekEnd) this._seekEnd();
+  }
 }
 
 // A video source without a decoder (headless): the state only
-const headlessSource = () => ({ setSpeed() {}, sync() {}, release() {}, glTex: null });
+const headlessSource = () => ({ setSpeed() {}, sync() {}, seek(t, done) { done(); }, release() {}, glTex: null });
 
 // A browser video source: the WebM through an HTMLVideoElement, kept within a tenth of a second of the video's clock,
 // uploaded into a texture when it shows a new frame
@@ -122,11 +142,13 @@ const browserSource = (ctx, file) => {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
   for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
                         [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-  let fresh = false, w = 1, h = 1;
+  let fresh = false, w = 1, h = 1, seeked = null;
   const onFrame = () => { fresh = true; el.requestVideoFrameCallback(onFrame); };
   if (el.requestVideoFrameCallback) el.requestVideoFrameCallback(onFrame);
+  el.addEventListener("seeked", () => { fresh = true; const f = seeked; seeked = null; if (f) f(); });
   return {
     setSpeed(s) { el.playbackRate = s; },
+    seek(t, done) { seeked = done; el.currentTime = t; },
     sync(v) {
       const run = v.status === CRI_STATUS.Playing && !v.paused;
       if (Math.abs(el.currentTime - v.time) > 0.1) el.currentTime = v.time;
@@ -490,6 +512,26 @@ export const delayUntilVideoTimeline = async (p) => {
     if (s === TIMELINE.Aborted) { const r = v.timeline.remainingSeconds; v.timeline.end(); return { completed: false, remaining: r }; }
     await loop.yield("Update");
   }
+};
+
+// The video a Movie or Clip row plays, for the host's controls: {kind: "movie" | "clip", time, duration, seekable}
+// (seconds of the video) while the flow flags say one plays, else null. Only a playing movie can be seeked: the rows
+// after a Movie row wait for its end alone, while the rows under a clip follow its frames (Delay rows on the video
+// timeline, which does not go back).
+export const storyVideoPosition = (ctx) => {
+  const v = storyVideo(ctx), cur = v && v.current;
+  if (!cur || !v.isVideoPlaying) return null;
+  const movie = v.flow.movieVideoPlaying && !v.flow.clipVideoPlaying;
+  return { kind: movie ? "movie" : "clip", time: cur.time, duration: cur.duration,
+           seekable: movie && cur.isPlaying() && !v.seekRespeeding };
+};
+
+// the host's seek of the playing movie -> a promise of false when none can be seeked now, else of true once the
+// source shows the position (or the hold's limit has passed)
+export const seekStoryVideo = (ctx, sec) => {
+  const pos = storyVideoPosition(ctx);
+  if (!pos || !pos.seekable) return Promise.resolve(false);
+  return storyVideo(ctx).current.seekTo(sec).then(() => true);
 };
 
 // Session.VideoTimeline.IsActive, for the Delay command

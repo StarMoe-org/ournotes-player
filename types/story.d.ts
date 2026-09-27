@@ -248,6 +248,15 @@ export interface StorySessionOptions {
   height?: number;
 }
 
+/** The video a Movie or Clip row plays (seconds of the video). Only a playing movie can be seeked: the rows after a
+ *  Movie row wait for its end alone, while the rows under a clip follow its frames. */
+export interface StoryVideoPosition {
+  kind: "movie" | "clip";
+  time: number;
+  duration: number;
+  seekable: boolean;
+}
+
 /** One story episode on a WebGL2 context, or headless (gl = null); no DOM access. */
 export class StorySession {
   /** An Overlay episode (playbackMode 1) gets a SimpleStorySession. */
@@ -276,12 +285,16 @@ export class StorySession {
   readonly endReason: number | null;
   readonly busy: boolean;
   readonly error: unknown;
+  /** The video a Movie or Clip row plays, else null. */
+  readonly video: StoryVideoPosition | null;
   play(): void;
   tap(): void;
   setAuto(on: boolean): void;
   setSpeed(speed: AdvPlaybackSpeed): void;
   skip(): void;
   setVolume(category: "Bgm" | "Se" | "Voice", volume: number): void;
+  /** Moves the playing movie to `seconds` of it; false when no video can be seeked now. */
+  seekVideo(seconds: number): Promise<boolean>;
   step(options?: { draw?: boolean }): Promise<void>;
   resize(width: number, height: number): void;
   render(): void;
@@ -401,6 +414,8 @@ export class StoryPlayer extends EventTarget {
   readonly ended: boolean;
   readonly lang: StoryLanguage | null;
   readonly languages: string[];
+  /** The video a Movie or Clip row plays, else null. */
+  readonly video: StoryVideoPosition | null;
   /** Starts the episode (call it from a user gesture so that audio may start) or resumes it. */
   play(): void;
   pause(): void;
@@ -411,6 +426,8 @@ export class StoryPlayer extends EventTarget {
   setLanguage(lang: StoryLanguage): Promise<void>;
   /** Restarts at line i with the game's shortcut. */
   seekToLine(i: number): Promise<void>;
+  /** Moves the playing movie to `seconds` of it (the player's own seek); false when no video can be seeked now. */
+  seekVideo(seconds: number): Promise<boolean>;
   /** The game's Skip: the playback stops. */
   skip(): void;
   setVolume(category: "Bgm" | "Se" | "Voice", volume: number): void;
@@ -444,6 +461,7 @@ export class OurnotesStoryElement extends HTMLElement {
   readonly ended: boolean;
   readonly languages: string[];
   readonly info: StoryManifestInfo | null;
+  readonly video: StoryVideoPosition | null;
   /** The player of the current `src` (null until loaded). */
   readonly player: StoryPlayer | null;
   /** Resolves to the player of the current `src`. */
@@ -453,6 +471,7 @@ export class OurnotesStoryElement extends HTMLElement {
   next(): Promise<void>;
   skip(): Promise<void>;
   seekToLine(i: number): Promise<void>;
+  seekVideo(seconds: number): Promise<boolean>;
   setVolume(category: "Bgm" | "Se" | "Voice", volume: number): Promise<void>;
   addEventListener<K extends keyof StoryPlayerEventMap>(type: K, listener: (this: OurnotesStoryElement, event: StoryPlayerEventMap[K]) => void,
                                                         options?: boolean | AddEventListenerOptions): void;

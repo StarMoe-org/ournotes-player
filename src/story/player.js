@@ -164,6 +164,7 @@ export class StoryPlayer extends EventTarget {
   get lang() { return this._lang; }
   get languages() { return this._manifest ? Object.keys(this._manifest.manifest.languages) : [this._lang].filter(Boolean); }
   get info() { return this.store ? this.store.info : null; }
+  get video() { return (this.session && this.session.video) || null; }
 
   // starts the episode (the first call; call it from a user gesture so that audio may start) or resumes it
   play() {
@@ -227,6 +228,15 @@ export class StoryPlayer extends EventTarget {
     await this._replace(async () => this._startSession(line, playing));
   }
 
+  // moves the playing movie to `sec` seconds of it (the player's own seek, as its pause) -> false when no video can be
+  // seeked now (`video.seekable`)
+  async seekVideo(sec) {
+    const s = this._need();
+    if (typeof s.seekVideo !== "function" || !await s.seekVideo(sec)) return false;
+    if (this._paused && this.session === s && !s.busy) s.render();           // no step follows while paused: draw now
+    return true;
+  }
+
   // loads another language of the story and restarts at the current line
   async setLanguage(lang) {
     if (lang === this._lang) return;
@@ -241,6 +251,7 @@ export class StoryPlayer extends EventTarget {
     if (this._raf) cancelAnimationFrame(this._raf);
     const old = this.session;
     this.session = null;
+    this._sync();
     if (old) { try { if (old.busy) await old._stepping; } catch (_) { /* reported */ } await old.dispose(); }
     try { await fn(); } catch (e) { this._fail(e); throw e; }
     this._drive();
@@ -327,6 +338,7 @@ export class StoryPlayer extends EventTarget {
         }
       } catch (e) { if (!this.disposed && this.session === s) this._fail(e); return; }
       if (this.disposed || this.session !== s) return;
+      if (n && this.controls) this.controls.tick();
       this._raf = requestAnimationFrame(tick);
     };
     this._raf = requestAnimationFrame(tick);

@@ -5,7 +5,7 @@ import {
   OurnotesStoryElement, advViewport, defineOurnotesStory, loadStoryStore, parseStorySpeed, registerCommand,
   registeredCommands, storyStrings,
   type AdvPlaybackSpeed, type StoryCommand, type StoryLogEntry, type StoryManifestInfo, type StoryPlayerCore,
-  type StoryPlayerEventMap, type StorySessionOptions, type StoryUIView,
+  type StoryPlayerEventMap, type StorySessionOptions, type StoryUIView, type StoryVideoPosition,
 } from "ournotes-player/story";
 import * as element from "ournotes-player/story/element";
 
@@ -24,6 +24,8 @@ export async function useStoryPlayer(host: HTMLElement): Promise<string[]> {
   player.setSpeed(speed);
   player.setVolume("Voice", 0.8);
   await player.seekToLine(3);
+  const video: StoryVideoPosition | null = player.video;
+  if (video && video.kind === "movie" && video.seekable) await player.seekVideo(video.duration / 2);
   await player.setLanguage("zh-Hant");
   player.skip();
   const info: StoryManifestInfo | null = player.info;
@@ -69,5 +71,6 @@ export function useElement(): void {
   el.addEventListener("line", (e) => console.log(e.detail.speaker));
   el.ready.then((p: StoryPlayer) => p.play());
   const E: typeof OurnotesStoryElement = element.OurnotesStoryElement;
+  el.seekVideo(10).then((ok: boolean) => console.log(ok, el.video?.time));
   console.log(C, E, el.lineCount);
 }
