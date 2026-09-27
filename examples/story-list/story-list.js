@@ -14,8 +14,8 @@ const KINDS = { chapter: "Main and event stories", friendship: "Friendship stori
 const LANGUAGE_NAMES = { ja: "日本語", en: "English", "zh-Hant": "繁體中文", "zh-Hans": "简体中文", ko: "한국어" };
 const q = new URLSearchParams(location.search);
 const site = new URL(q.get("site") || "../", location.href);
-// the query entries every page of the site keeps: the site root and the Live2D script URLs
-const kept = () => ({ site: q.get("site"), core: q.get("core"), motionsync: q.get("motionsync") });
+// the query entries every page of the site keeps: the site root and the Live2D and Spine script URLs
+const kept = () => ({ site: q.get("site"), core: q.get("core"), motionsync: q.get("motionsync"), spine: q.get("spine") });
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 
 const el = (tag, props = {}, ...children) => {
@@ -31,7 +31,8 @@ const loadIndex = async () => {
   return r.json();
 };
 
-// Live2D's files are loaded by the page (classic scripts defining Live2DCubismCore and Live2DCubismMotionSyncCore)
+// Live2D's files and the Spine runtime are loaded by the page (classic scripts defining Live2DCubismCore,
+// Live2DCubismMotionSyncCore and spine)
 const loadScript = (src, name) => new Promise((resolve, reject) => {
   if (globalThis[name]) { resolve(); return; }
   const s = document.createElement("script");
@@ -82,6 +83,7 @@ const play = async (advId) => {
   });
   await loadScript(q.get("core") || CORE, "Live2DCubismCore");
   if (q.get("motionsync")) await loadScript(q.get("motionsync"), "Live2DCubismMotionSyncCore");
+  if (q.get("spine")) await loadScript(q.get("spine"), "spine");
   for (const a of ["lang", "ui-lang", "line", "speed", "quality", "film-grain"]) if (q.get(a)) story.setAttribute(a, q.get(a));
   if (q.get("auto")) story.setAttribute("auto", q.get("auto"));
   story.src = new URL(manifest, site).href;

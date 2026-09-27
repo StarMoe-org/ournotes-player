@@ -71,7 +71,8 @@ Properties `src`, `lang`, `auto`, `speed` reflect the attributes; `line`, `lineC
 `ready` (a promise of it). Events (not bubbling) as `StoryPlayer`'s. The element is `display: block` and 13:6 at its
 width unless the page gives it a height.
 [examples/story/](../examples/story/) is such a page: it plays `stories/<advId>.json` of a site (`?story=<advId>`) or
-the manifest named by `?src=`, with Live2D's two files from `?core=` and `?motionsync=`.
+the manifest named by `?src=`, with Live2D's two files from `?core=` and `?motionsync=` and, for home talks, a Spine
+runtime from `?spine=`.
 
 ## `StoryPlayer`
 

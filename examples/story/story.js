@@ -1,7 +1,8 @@
 // Story page: plays one story manifest in <ournotes-story>. ?story=<advId> plays stories/<advId>.json of the site,
 // ?src=<URL> another manifest; ?site=<URL> names the site root (default: the parent directory of this page). ?lang=,
 // ?line=, ?auto=1 and ?speed= are passed to the element. Live2D Cubism Core is loaded from Live2D's distribution unless
-// ?core=<URL> names another copy; the MotionSync Core (the voices' lip sync) from ?motionsync=<URL> when given.
+// ?core=<URL> names another copy; the MotionSync Core (the voices' lip sync) from ?motionsync=<URL> when given, and a
+// Spine runtime (spine-core, the global `spine`, for the characters of home talks) from ?spine=<URL> when given.
 // Served from the repository. On a site, import dist/ournotes-player.story.element.min.js instead.
 import "../../src/story/define.js";
 
@@ -55,6 +56,7 @@ pick.addEventListener("change", () => {
   try {
     await loadScript(q.get("core") || CORE, "Live2DCubismCore");
     if (q.get("motionsync")) await loadScript(q.get("motionsync"), "Live2DCubismMotionSyncCore");
+    if (q.get("spine")) await loadScript(q.get("spine"), "spine");
   } catch (e) { message(e.message); return; }
   const src = q.get("src") || (q.get("story") ? new URL(`stories/${q.get("story")}.json`, site).href : "");
   if (!src) { message("no story: pass ?story=<advId> or ?src=<manifest URL>"); return; }
