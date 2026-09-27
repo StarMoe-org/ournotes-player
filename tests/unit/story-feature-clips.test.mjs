@@ -1,7 +1,8 @@
-// AnimRecords: controllers and clips written once per data file resolve across prefabs. Synthetic inputs only.
+// AnimRecords: controllers and clips written once per data file resolve across prefabs; animRecordProblems lists the
+// references that do not resolve (the data validator's check). Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnimRecords } from "../../src/story/features/clips.js";
+import { AnimRecords, animRecordProblems } from "../../src/story/features/clips.js";
 
 const FLT_MIN = -3.4028234663852886e+38;
 const clip = (name, to) => ({ clip: name, sampleRate: 60, wrapMode: 0, startTime: 0, stopTime: 1, loopTime: false, cycleOffset: 0,
@@ -32,4 +33,22 @@ test("AnimRecords: a controller or clip reference resolves to the file's full re
   assert.equal(d.states[0].clip.length, 1);                               // a clip of another prefab's controller
   const two = new AnimRecords({ x: [clip("in", 1), clip("in", 2)] });
   assert.throws(() => two.controllerOf(ctrl("e", [{ clip: "in" }]), "e"), /two different clips named in/);
+});
+
+test("animRecordProblems: references without a full record, or with two different ones, in the file", () => {
+  const animator = (c) => ({ nodes: [{ components: [{ type: "Animator", m_Controller: c }] }] });
+  // a letterbox-like file: the second frame names the first one's controller; a later controller reuses its clip
+  const ok = { frames: { black: animator(ctrl("lb", [clip("in", 1), { clip: "in" }])), white: animator({ controller: "lb" }),
+                         other: animator(ctrl("o", [{ clip: "in" }])), none: animator(null) } };
+  assert.deepEqual(animRecordProblems(ok), []);
+  // the controller only as a reference (its full record left out of the file), a clip reference without its clip
+  assert.deepEqual(animRecordProblems({ frames: { white: animator({ controller: "lb" }), o: animator(ctrl("o", [{ clip: "gone" }])) } }),
+                   ["controller lb: referenced, not in the file", "clip gone: referenced, not in the file"]);
+  // two different full clips under one name: a reference through the file is ambiguous; a controller's own full clip
+  // resolves its own reference first
+  const two = { a: animator(ctrl("a", [clip("in", 1), { clip: "in" }])), b: animator(ctrl("b", [clip("in", 2)])),
+                c: animator(ctrl("c", [{ clip: "in" }])) };
+  assert.deepEqual(animRecordProblems(two), ["clip in: referenced, two different full records in the file"]);
+  assert.deepEqual(animRecordProblems({ a: animator(ctrl("a", [clip("in", 1), clip("in", 2)])) }),
+                   ["controller a: two different clips named in"]);
 });

@@ -596,6 +596,16 @@ duration) with the WebM files (VP9 video, Opus audio) next to it. The player rea
 `effects.json` (Effect), `posteffects.json` (PostEffect), `stills.json` (Still), `chat.json` (the chat rows) and the
 videos (Movie, Clip); `talkwindows.json` is not read yet (the story UI's default talk window is used).
 
+An `Animator` component of these prefabs names its controller in `m_Controller` (`null`: none). A file holds each
+controller and each clip in full once, where it first uses it: an `AnimatorController` record (`controller` its name,
+`clips`, `layers`, `stateMachines` with the states, their motions as indices into `clips` and their transitions,
+`parameters`, `defaultValues`) whose clips are [Mecanim clips](data-format.md#note-assets-livenotesnotesjson) (`clip`
+their name). Every later use in the same file, in the same prefab or another one, is a reference by name:
+`{"controller": <name>}` for a controller, `{"clip": <name>}` for a clip in a controller's `clips`. A reference
+resolves to the full record of that name in the same file; when the file holds two different full records under one
+name, a reference to that name is ambiguous and the player refuses it. Of two frames that share a controller, only
+the first one in the file carries it in full.
+
 Particle systems (in `effects.json`, `frames.json`, `stills.json` and the stage prefabs of `scene.json`) keep the module
 structure of the live's particle systems ([Note assets](data-format.md#note-assets-livenotesnotesjson)), with two
 references of their own:
@@ -637,6 +647,8 @@ Besides the charts and models, validates `stories.json` and every story (or the 
   episode's rows give it;
 - `host` present exactly for an Overlay episode with open fonts; `host/host.json` a common file of format
   `ournotes.story-host/1` with the manifest's `kind`, its `ui` document a common file;
+- in each media file, every controller and clip reference resolves to a full record of its name in the file, and no
+  two different full records share that name ([Media files](#media-files));
 - per language: `ui/ui.json` (node order), `ui/languages.json` and `ui/fonts.json` (schemas; `language` equal to the
   group's, `mode` and `field` those of the language; every text node of that language's `ui/ui.json` has a binding
   whose `localized` font asset and material exist, and every binding is a text node; with open fonts the same for

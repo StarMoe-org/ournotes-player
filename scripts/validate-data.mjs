@@ -21,17 +21,19 @@
 // (schema, language groups, agreement with stories.json), every asset of the common files and of each language group,
 // story.json, episode.json, the required commands against the episode's rows and the player settings, the cue sheets
 // (cues.json, waveform files and their FLAC / MP4 headers), the Live2D models (moc3 header, prefab, textures, shader
-// variants), both shader directories, texture descriptors, and per language ui/ui.json, ui/languages.json and
-// ui/fonts.json (text bindings, the dialog, chat window and frame bindings, font assets with their fallbacks and
-// missing glyph, fallback materials, sprite assets, glyph pages, text material shaders). An Overlay story built with
-// open fonts: its host (host/host.json and, per language, ui/simple/ui.json with ui/simple/fonts.json). A story id is
-// the manifest path below stories/ without .json (`10462`, `tw/10462`).
+// variants), the Animator controller and clip references of the media files, both shader directories, texture
+// descriptors, and per language ui/ui.json, ui/languages.json and ui/fonts.json (text bindings, the dialog, chat
+// window and frame bindings, font assets with their fallbacks and missing glyph, fallback materials, sprite assets,
+// glyph pages, text material shaders). An Overlay story built with open fonts: its host (host/host.json and, per
+// language, ui/simple/ui.json with ui/simple/fonts.json). A story id is the manifest path below stories/ without .json
+// (`10462`, `tw/10462`).
 // Prints the failures and a summary; exits 1 when a chart, a model or a story fails. No dependencies.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { animRecordProblems } from "../src/story/features/clips.js";
 import { ADV_COMMAND } from "../src/story/interfaces.js";
 import { compile } from "./lib/json-schema.mjs";
 
@@ -767,6 +769,7 @@ class Story extends Chart {
     for (const k of STORY_MEDIA) if (story[k] !== null && k !== "videos") {
       const v = this.doc(story[k]);
       if (v) this.descriptors(v, "");
+      if (v) for (const e of animRecordProblems(v)) this.err(story[k], e);
       if (v && k === "frames") this.frameTexts = frameTextNodes(v);
     }
     if (this.has("ui/shaders/shaders.json")) this.checkShaders("ui/shaders");

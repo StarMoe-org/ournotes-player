@@ -45,13 +45,7 @@ export class AnimRecords {
 
   // the normalized controller (AnimController.fromMecanim) with its clips: the controller's own full records first
   controllerOf(raw, where) {
-    const own = new Map();
-    for (const c of raw.clips) {
-      if (!isFullClip(c)) continue;
-      const seen = own.get(c.clip);
-      if (seen && JSON.stringify(seen) !== JSON.stringify(c)) throw new this.Err(`${where}: two clips named ${c.clip}`);
-      if (!seen) own.set(c.clip, c);
-    }
+    const own = ownClips(raw, (name) => new this.Err(`${where}: two clips named ${name}`));
     const made = new Map();
     return AnimController.fromMecanim(raw, (key) => {
       if (!made.has(key)) made.set(key, AnimClip.fromMecanim(own.get(key) || this._get(this.clips, "clip", key, where), key));
@@ -59,3 +53,44 @@ export class AnimRecords {
     });
   }
 }
+
+// the full clip records of a full controller's `clips` by name (two different ones under one name raise)
+const ownClips = (raw, err) => {
+  const own = new Map();
+  for (const c of raw.clips || []) {
+    if (!isFullClip(c)) continue;
+    const seen = own.get(c.clip);
+    if (seen && JSON.stringify(seen) !== JSON.stringify(c)) throw err(c.clip);
+    if (!seen) own.set(c.clip, c);
+  }
+  return own;
+};
+
+// The references of a story data file that AnimRecords cannot resolve: a controller or clip reference without a full
+// record of its name in the file, or with two different ones (a clip reference in a controller's `clips` resolves to
+// that controller's own full record first). Returns the problems as messages, each once.
+export const animRecordProblems = (doc) => {
+  const r = new AnimRecords(doc), out = new Set();
+  const need = (map, kind, name) => {
+    const v = map.get(name);
+    if (v === undefined) out.add(`${kind} ${name}: referenced, not in the file`);
+    else if (v === AMBIGUOUS) out.add(`${kind} ${name}: referenced, two different full records in the file`);
+  };
+  const walk = (x, own) => {
+    if (Array.isArray(x)) { for (const v of x) walk(v, own); return; }
+    if (!x || typeof x !== "object") return;
+    if (isFullController(x)) {
+      let mine = new Map();
+      try { mine = ownClips(x, (name) => new Error(name)); } catch (e) {
+        out.add(`controller ${x.controller}: two different clips named ${e.message}`);
+      }
+      for (const [k, v] of Object.entries(x)) walk(v, k === "clips" ? mine : null);
+      return;
+    }
+    if (typeof x.controller === "string") need(r.controllers, "controller", x.controller);
+    else if (typeof x.clip === "string" && !isFullClip(x) && !(own && own.has(x.clip))) need(r.clips, "clip", x.clip);
+    for (const v of Object.values(x)) walk(v, null);
+  };
+  walk(doc, null);
+  return [...out];
+};
