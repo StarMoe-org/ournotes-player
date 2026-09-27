@@ -116,7 +116,9 @@ export const FxLiveMath = {
 
 // ------------------------------------------------------------------------------------------ SpriteRenderer
 // UnityEngine.SpriteRenderer of the effect prefabs: mesh in the renderer's local space (units), vertex colour =
-// m_Color, material = m_Materials[0] with the sprite's texture as _MainTex.
+// m_Color, material = m_Materials[0] with the sprite's texture as _MainTex. A program with the per-draw sprite
+// constants (URP 2D Sprite-Unlit-Default: unity_SpriteColor, unity_SpriteProps) takes the colour and the flip there,
+// over white vertices at their unflipped positions (LiveLane.spriteItem, the stage background sprite).
 //   drawMode 0 (Simple): the sprite's own mesh (exported m_Sprite.vertices / uv / indices, units relative to the pivot).
 //   drawMode 1 (Sliced): a 9-slice of m_Size: outer rectangle (-pivot * size .. (1 - pivot) * size), borders
 //   (m_Sprite.border px / pixelsToUnits: x left, y bottom, z right, w top); UVs of the sprite rect in its texture.
@@ -131,6 +133,8 @@ export const FxLiveMath = {
 // ENGINE: vertex colour is Color32 (Unity's sprite vertex format), round(clamp01(c) * 255), as for particles.
 // Colour space Gamma (player.colorSpace), so no linear conversion.
 // ENGINE: flipX / flipY negate the local x / y of the vertices (the shader culls nothing: Cull Off).
+// ENGINE: a program with the per-draw sprite constants gets white, unflipped vertices; colour and flip come per draw.
+// (unity_SpriteColor = SpriteRenderer.color, unity_SpriteProps = (flipX ? -1 : 1, flipY ? -1 : 1, 0, 0))
 export class FxSpriteRenderer {
   constructor(comp, transform, { materials = null, name = "" } = {}) {
     const sp = comp.m_Sprite;
@@ -218,14 +222,16 @@ export class FxSpriteRenderer {
     return g;
   }
 
-  // vertex buffer for FxMaterial.draw: POSITION float3, COLOR float4 (Color32 values), TEXCOORD0 float2
-  mesh() {
+  // vertex buffer for FxMaterial.draw: POSITION float3, COLOR float4 (Color32 values), TEXCOORD0 float2. color /
+  // flip false: white vertices / the positions without the renderer's flip (the program applies them per draw).
+  mesh({ color = true, flip = true } = {}) {
     const g = this.geometry(), n = g.pos.length, stride = 9, verts = new Float32Array(n * stride);
     const c32 = (x) => Math.round(Math.min(Math.max(x, 0), 1) * 255) / 255;
-    const col = this.color.map(c32);
+    const col = color ? this.color.map(c32) : [1, 1, 1, 1];
+    const fx = !flip && this.flipX ? -1 : 1, fy = !flip && this.flipY ? -1 : 1;     // geometry() holds the flip
     for (let k = 0; k < n; k++) {
       const o = k * stride;
-      verts[o] = g.pos[k][0]; verts[o + 1] = g.pos[k][1]; verts[o + 2] = g.pos[k][2];
+      verts[o] = fx * g.pos[k][0]; verts[o + 1] = fy * g.pos[k][1]; verts[o + 2] = g.pos[k][2];
       verts[o + 3] = col[0]; verts[o + 4] = col[1]; verts[o + 5] = col[2]; verts[o + 6] = col[3];
       verts[o + 7] = g.uv[k][0]; verts[o + 8] = g.uv[k][1];
     }
@@ -253,20 +259,24 @@ export class FxSpriteRenderer {
     const distance = camPos ? Math.hypot(c[0] - camPos[0], c[1] - camPos[1], c[2] - camPos[2]) : 0;
     const queue = this.material ? this.material.queue
       : (this.materialRecord.renderQueue >= 0 ? this.materialRecord.renderQueue : null);
-    const mesh = this.mesh();
     return { sortingLayer: this.sortingLayer, sortingOrder: this.sortingOrder, queue, distance, name: this.name, sprite: this,
-             draw: (ctx) => this.draw(ctx, mesh, M) };
+             draw: (ctx) => this.draw(ctx, M) };
   }
 
   // Unity binds the sprite texture as _MainTex through a MaterialPropertyBlock (the material's _MainTex_ST stays).
-  draw(ctx, mesh = this.mesh(), M = this.transform.localToWorld()) {
+  // The colour and the flip go where the material's program reads them (header).
+  draw(ctx, M = this.transform.localToWorld()) {
     if (!this.material) return;
     if (!this.texture) {
       if (!this._warned) { this._warned = true; console.warn(`FxSpriteRenderer ${this.name}: sprite texture not loaded`); }
       return;
     }
-    const t = this.texture;
-    this.material.draw(ctx, mesh, M, { _MainTex: t, _MainTex_TexelSize: [1 / t.width, 1 / t.height, t.width, t.height] });
+    const t = this.texture, prog = this.material.ready ? this.material.program : null;
+    const color = !!prog && prog.reads("unity_SpriteColor"), flip = !!prog && prog.reads("unity_SpriteProps");
+    const sheet = { _MainTex: t, _MainTex_TexelSize: [1 / t.width, 1 / t.height, t.width, t.height] };
+    if (color) sheet.unity_SpriteColor = this.color.slice();
+    if (flip) sheet.unity_SpriteProps = [this.flipX ? -1 : 1, this.flipY ? -1 : 1, 0, 0];
+    this.material.draw(ctx, this.mesh({ color: !color, flip: !flip }), M, sheet);
   }
 };
 

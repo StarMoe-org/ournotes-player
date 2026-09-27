@@ -46,6 +46,8 @@ export class AdvCamera {
     this.far = cam["far clip plane"];
     this.clearColor = [cam.m_BackGroundColor.r, cam.m_BackGroundColor.g, cam.m_BackGroundColor.b, cam.m_BackGroundColor.a];
     this.defaultFov = cam["field of view"];
+    if (cam.orthographic) throw new Error("MainCamera: an orthographic main camera is not implemented");
+    this.orthographicSize = cam["orthographic size"];
     this.transform = new Transform("MainCamera");
     this.x = 0; this.y = 0; this.z = 0; this.zoomRatio = 1; this.fieldOfView = this.defaultFov;
     this.euler = { x: 0, y: 0, z: 0 };
@@ -107,6 +109,10 @@ export class AdvCamera {
     return mat4.mul(mat4.scale(1, 1, -1), m);
   }
   projection(aspect) { return mat4.perspective(this.fov, aspect, this.near, this.far); }
+
+  // unity_OrthoParams of this perspective camera: (orthographicSize x aspect, orthographicSize, 0, 0); URP puts the
+  // serialized orthographic size in x / y whatever the projection
+  orthoParams(aspect) { return [F(this.orthographicSize * F(aspect)), this.orthographicSize, 0, 0]; }
 }
 
 // AdvCharacterField

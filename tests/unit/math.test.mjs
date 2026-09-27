@@ -1,5 +1,6 @@
 // Unity-convention math (src/engine/math.js): column-major matrices, Matrix4x4.TRS, Quaternion.Euler order in Unity's
-// left-handed space, the OpenGL-style perspective matrix and the Transform parent chain. Synthetic inputs only.
+// left-handed space, the inverses, the OpenGL-style perspective matrix and the Transform parent chain. Synthetic inputs
+// only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Transform, mat4, quat } from "../../src/engine/math.js";
@@ -44,6 +45,15 @@ test("inverseRigid inverts rotation + translation", () => {
   const m = mat4.trs({ x: 1, y: -2, z: 5 }, quat.euler(30, 45, 60), { x: 1, y: 1, z: 1 });
   const id = mat4.mul(mat4.inverseRigid(m), m);
   for (let i = 0; i < 16; i++) assert.ok(Math.abs(id[i] - (i % 5 === 0 ? 1 : 0)) < 1e-6, `m[${i}] = ${id[i]}`);
+});
+
+test("inverse inverts a scaled, rotated, translated matrix; a singular matrix has none", () => {
+  const m = mat4.trs({ x: 1, y: -2, z: 5 }, quat.euler(30, 45, 60), { x: 2, y: 0.5, z: -3 });
+  const inv = mat4.inverse(m);
+  assert.ok(inv instanceof Float32Array);
+  for (const id of [mat4.mul(inv, m), mat4.mul(m, inv)])
+    for (let i = 0; i < 16; i++) assert.ok(Math.abs(id[i] - (i % 5 === 0 ? 1 : 0)) < 1e-5, `m[${i}] = ${id[i]}`);
+  assert.equal(mat4.inverse(mat4.trs({ x: 1, y: 2, z: 3 }, quat.identity(), { x: 1, y: 0, z: 1 })), null);
 });
 
 test("perspective maps the near and far planes to NDC z -1 and 1", () => {

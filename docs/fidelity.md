@@ -315,6 +315,7 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 - a Tight-mesh sprite in Sliced mode (ef_tap_pillar) uses its full rect, not its textureRect.
 - vertex colour is Color32 (Unity's sprite vertex format), round(clamp01(c) * 255), as for particles.
 - flipX / flipY negate the local x / y of the vertices (the shader culls nothing: Cull Off).
+- a program with the per-draw sprite constants gets white, unflipped vertices; colour and flip come per draw.
 - activation is native; OnEnable / OnDisable run immediately inside SetActive and m_IsActive writes, parent first.
 - GameObject.m_IsActive from a float curve: active when the value is > 0.5.
 - Play with normalizedTime -Infinity does not restart a state that is already the current one.
@@ -506,6 +507,7 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 **`src/story/renderer.js`**
 
 - URP picks the camera colour format (B10G11R11 or R16G16B16A16_SFloat) from a player setting; RGBA16F holds
+- world-to-object of a zero-scale transform is native; zeros are passed (the draw covers no pixel).
 
 **`src/story/simple/home/blur.js`**
 

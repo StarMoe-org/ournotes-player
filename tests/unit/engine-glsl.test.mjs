@@ -1,6 +1,7 @@
 // UnityProgram.apply's sampler binding (src/engine/glsl.js): a cube sampler takes a cube map, every other sampler a 2D
-// texture, and a texture of the other kind is refused. passState / applyState: a pass's Stencil block (stencilOp) drives
-// both faces from the material's stencil properties. Synthetic inputs only.
+// texture, and a texture of the other kind is refused. UnityProgram.reads names the program's inputs. passState /
+// applyState: a pass's Stencil block (stencilOp) drives both faces from the material's stencil properties. Synthetic
+// inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GL, UnityProgram, applyState, passState } from "../../src/engine/glsl.js";
@@ -22,6 +23,16 @@ test("UnityProgram.apply: cube samplers bind TEXTURE_CUBE_MAP, other samplers TE
   assert.deepEqual(binds, [["bindTexture", gl.TEXTURE_CUBE_MAP, cube.glTexture], ["bindTexture", gl.TEXTURE_2D, flat.glTexture]]);
   assert.throws(() => p.apply([{ _Env: flat, _MainTex: flat }]), /p: sampler _Env needs a cube map/);
   assert.throws(() => p.apply([{ _Env: cube, _MainTex: cube }]), /p: sampler _MainTex needs a 2D texture/);
+});
+
+test("UnityProgram.reads: an active uniform, uniform block member (matrix name without hlslcc_mtx4x4) or sampler", () => {
+  const gl = headlessGL();
+  const p = Object.assign(program(gl, [["_MainTex", "SAMPLER_2D"]]), {
+    uniforms: [{ name: "_WorldSpaceCameraPos" }],
+    blocks: [{ name: "UnityPerDraw", members: [{ name: "hlslcc_mtx4x4unity_ObjectToWorld" }, { name: "unity_SpriteColor" }] }],
+  });
+  for (const name of ["_WorldSpaceCameraPos", "unity_ObjectToWorld", "unity_SpriteColor", "_MainTex"]) assert.ok(p.reads(name), name);
+  for (const name of ["unity_SpriteProps", "hlslcc_mtx4x4unity_ObjectToWorld", "unity_OrthoParams"]) assert.ok(!p.reads(name), name);
 });
 
 // a UI pass state as packed: Stencil { Ref [_Stencil] ReadMask [_StencilReadMask] WriteMask [_StencilWriteMask]

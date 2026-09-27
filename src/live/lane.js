@@ -281,8 +281,7 @@ export class LiveLane {
       sortingLayer: sr.m_SortingLayer || 0, sortingOrder: order, queue: LiveLane.queue(r.lib, mat), center: cen,
       draw: (ctx) => {
         const gl = ctx.gl, prog = ctx.lib.program(shader, 0, mat.keywords), ms = liveMaterialSheets(ctx.lib, mat, ctx.tex);
-        const constant = prog.blocks.some((b) => b.members.some((m) => m.name === "unity_SpriteColor")) ||
-                         prog.uniforms.some((u) => u.name === "unity_SpriteColor");
+        const constant = prog.reads("unity_SpriteColor");
         prog.apply(liveFitSheets(prog, [{ _MainTex: tex, unity_SpriteColor: constant ? color : [1, 1, 1, 1],
                       unity_SpriteProps: [sr.m_FlipX ? -1 : 1, sr.m_FlipY ? -1 : 1, 0, 0], _TextureSampleAdd: [0, 0, 0, 0],
                       ...LIVE_UI_DEAD_INPUTS },

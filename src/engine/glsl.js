@@ -127,6 +127,12 @@ export class UnityProgram {
     return uniformName.startsWith("hlslcc_mtx4x4") ? uniformName.slice("hlslcc_mtx4x4".length) : uniformName;
   }
 
+  // whether the program reads the property: an active uniform, uniform block member or sampler of that name
+  reads(name) {
+    const is = (u) => UnityProgram.propertyName(u.name) === name;
+    return this.uniforms.some(is) || this.blocks.some((b) => b.members.some(is)) || this.samplers.some(is);
+  }
+
   static lookup(sheets, name, label) {
     for (const s of sheets) if (s && name in s) return s[name];
     throw new Error(`${label}: no value for shader property '${name}'`);

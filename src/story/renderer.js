@@ -146,14 +146,17 @@ export class StoryRenderer {
   }
 
   // ---------------------------------------------------------------- globals
+  // the main camera's per-camera values (ScriptableRenderer.SetPerCameraShaderVariables,
+  // RenderingUtils.SetViewAndProjectionMatrices: glstate_matrix_projection = the GPU projection)
   _cameraGlobals(w, h) {
     const cam = this.scene.camera, t = this.loop.time;
     const V = cam.viewMatrix(), P = cam.projection(w / h);
     this.view = V; this.proj = P; this.vp = mat4.mul(P, V);
-    this.camPos = cam.transform.worldPosition();
+    const pos = this.camPos = cam.transform.worldPosition();
     const g = {
       _ProjectionParams: [1, cam.near, cam.far, 1 / cam.far],
-      unity_MatrixVP: this.vp, unity_MatrixV: V,
+      unity_MatrixVP: this.vp, unity_MatrixV: V, glstate_matrix_projection: P,
+      _WorldSpaceCameraPos: [pos.x, pos.y, pos.z], unity_OrthoParams: cam.orthoParams(w / h),
       _Time: [t / 20, t, t * 2, t * 3], _GlobalMipBias: [0, 0],
       _ScreenParams: [w, h, 1 + 1 / w, 1 + 1 / h],
     };
@@ -212,7 +215,8 @@ export class StoryRenderer {
   }
 
   // Engine per-object values. The ambient probe of a Flat white environment is
-  // taken as SH(N) = 1.
+  // taken as SH(N) = 1. unity_WorldToObject (the renderer's world-to-local matrix) is made when a program reads it.
+  // ENGINE: world-to-object of a zero-scale transform is native; zeros are passed (the draw covers no pixel).
   _perObject(transform, layer) {
     const M = transform.localToWorld();
     let count = 0;
@@ -225,9 +229,11 @@ export class StoryRenderer {
       }
       count = Math.min(count, 2);
     }
+    let inverse = null;
     return { unity_ObjectToWorld: M, unity_SHAr: [0, 0, 0, 1], unity_SHAg: [0, 0, 0, 1], unity_SHAb: [0, 0, 0, 1],
              unity_SHBr: [0, 0, 0, 0], unity_SHBg: [0, 0, 0, 0], unity_SHBb: [0, 0, 0, 0], unity_SHC: [0, 0, 0, 0],
-             unity_LightData: [0, count, 0, 0] };
+             unity_LightData: [0, count, 0, 0],
+             get unity_WorldToObject() { return inverse || (inverse = mat4.inverse(M) || new Float32Array(16)); } };
   }
 
   // -------------------------------------------------------- transparent lists
