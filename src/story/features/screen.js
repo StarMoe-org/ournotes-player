@@ -332,10 +332,11 @@ export class StoryScreen {
       const color = this._cameraColor(gl, width, height);
       color.bind();
       const bg = this.camera.camera.m_BackGroundColor;
-      gl.colorMask(true, true, true, true);
+      // clear flags SolidColor: colour, depth and stencil cleared whole, whatever write masks the last draw left
+      gl.colorMask(true, true, true, true); gl.depthMask(true); gl.stencilMask(0xff);
       gl.clearColor(bg.r, bg.g, bg.b, bg.a);
-      gl.clearStencil(0);
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);   // clear flags SolidColor
+      gl.clearDepth(1); gl.clearStencil(0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
       for (const [c, items] of cam) this.gl.draw(c, items, width, height);
       const R = this.ctx.renderer;
       this.post.render(this.cameraStack(), color, this._renderTarget(gl, width, height),

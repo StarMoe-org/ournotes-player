@@ -441,6 +441,7 @@ const PASS_STATE = { rtBlend0: { srcBlend: v(1), destBlend: v(0), srcBlendAlpha:
                                  blendOpAlpha: v(0), colMask: v(15) },
                      zTest: v(4), zWrite: v(1), culling: v(2), offsetFactor: v(0), offsetUnits: v(0), stencilRef: v(0),
                      stencilReadMask: v(255), stencilWriteMask: v(255), rtSeparateBlend: false, alphaToMask: v(0),
+                     stencilOp: { comp: v(8), pass: v(0), fail: v(0), zFail: v(0) },
                      stencilOpFront: { comp: v(8), pass: v(0), fail: v(0), zFail: v(0) },
                      stencilOpBack: { comp: v(8), pass: v(0), fail: v(0), zFail: v(0) } };
 const drawnShader = (queue, lightMode, passes = 1) => ({

@@ -191,18 +191,28 @@ export class UnityProgram {
   }
 };
 
+// the fields of a serialized stencil op in the order of passState's stencilFront / stencilBack, and their defaults
+// (CompareFunction.Always, StencilOp.Keep)
+const STENCIL_FIELDS = ["comp", "pass", "fail", "zFail"], STENCIL_DEFAULT = [8, 0, 0, 0];
+const unnamed = (v) => !v.name || v.name === "<noninit>";
+
 // Render state of a shader pass, resolved against material floats.
+// A pass's Stencil block (Comp / Pass / Fail / ZFail) is serialized as stencilOp and applies to both faces;
+// stencilOpFront / stencilOpBack hold the per-face forms (CompFront, PassBack, ...), which no packed shader sets.
 export const passState = (state, matFloats) => {
-  const val = (v) => (v.name && v.name !== "<noninit>") ? UnityProgram.lookup([matFloats], v.name, "state") : v.val;
+  const val = (v) => !unnamed(v) ? UnityProgram.lookup([matFloats], v.name, "state") : v.val;
   const b = state.rtBlend0;
+  for (const face of [state.stencilOpFront, state.stencilOpBack])
+    if (STENCIL_FIELDS.some((k, i) => !unnamed(face[k]) || face[k].val !== STENCIL_DEFAULT[i]))
+      throw new Error("per-face stencil ops not implemented");
+  const stencil = STENCIL_FIELDS.map((k) => val(state.stencilOp[k]));
   const out = {
     src: val(b.srcBlend), dst: val(b.destBlend), srcA: val(b.srcBlendAlpha), dstA: val(b.destBlendAlpha),
     op: val(b.blendOp), opA: val(b.blendOpAlpha), colMask: val(b.colMask),
     zTest: val(state.zTest), zWrite: val(state.zWrite), cull: val(state.culling),
     offsetFactor: val(state.offsetFactor), offsetUnits: val(state.offsetUnits),
     stencilRef: val(state.stencilRef), stencilRead: val(state.stencilReadMask), stencilWrite: val(state.stencilWriteMask),
-    stencilFront: ["comp", "pass", "fail", "zFail"].map((k) => val(state.stencilOpFront[k])),
-    stencilBack: ["comp", "pass", "fail", "zFail"].map((k) => val(state.stencilOpBack[k])),
+    stencilFront: stencil, stencilBack: [...stencil],
   };
   if (state.rtSeparateBlend) throw new Error("per-target blend not implemented");
   if (val(state.alphaToMask)) throw new Error("alpha-to-mask not implemented");
@@ -228,8 +238,9 @@ export const applyState = (gl, s) => {
   if (s.offsetFactor || s.offsetUnits) {
     gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(s.offsetFactor, s.offsetUnits);
   } else gl.disable(gl.POLYGON_OFFSET_FILL);
-  const stencilOff = s.stencilFront[0] === 8 && s.stencilBack[0] === 8 &&
-                     s.stencilFront.slice(1).every((x) => x === 0) && s.stencilBack.slice(1).every((x) => x === 0);
+  // the stencil test is off for CompareFunction.Disabled (0) and for Always with every op Keep on both faces
+  const faceOff = (ops) => ops[0] === 8 && ops.slice(1).every((x) => x === 0);
+  const stencilOff = s.stencilFront[0] === 0 || s.stencilBack[0] === 0 || (faceOff(s.stencilFront) && faceOff(s.stencilBack));
   if (stencilOff) gl.disable(gl.STENCIL_TEST);
   else {
     gl.enable(gl.STENCIL_TEST);

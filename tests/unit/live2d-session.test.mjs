@@ -127,6 +127,7 @@ const pass = (blend) => ({ state: {
               blendOpAlpha: V(0), colMask: V(15) },
   zTest: V(4), zWrite: V(0), culling: V(0, "_Cull"), offsetFactor: V(0), offsetUnits: V(0), stencilRef: V(0),
   stencilReadMask: V(255), stencilWriteMask: V(255), rtSeparateBlend: false, alphaToMask: V(0),
+  stencilOp: { comp: V(8), pass: V(0), fail: V(0), zFail: V(0) },
   stencilOpFront: { comp: V(8), pass: V(0), fail: V(0), zFail: V(0) }, stencilOpBack: { comp: V(8), pass: V(0), fail: V(0), zFail: V(0) },
 } });
 const litPass = pass([V(1, "_SrcColor"), V(10, "_DstColor"), V(1, "_SrcAlpha"), V(10, "_DstAlpha")]);
