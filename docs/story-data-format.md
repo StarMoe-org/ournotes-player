@@ -450,7 +450,7 @@ assets (`game`).
 | `frameTexts` | object | Optional, open fonts and an episode whose frames have text nodes: frame name (a key of the story's `frames.json` `frames`) → text node path → text binding, one per node of the frame's prefab with a TextMeshPro text component (`TextMeshProUGUI`, `RubyTextMeshProUGUI`, `RubyEmojiTextMeshProUGUI`). A text without `LocalizeText` keeps its serialized font asset, material and line spacing in `localized`. Game-font data has no frame bindings. |
 | `spriteAssets` | object | Optional: sprite asset name → [sprite asset](#sprite-assets), present when the episode's texts draw sprites (the game's emoji sprite asset). |
 | `emojiSpriteAsset` | string | With `spriteAssets`: the sprite asset `LocalizeManager.EmojiSpriteAsset` is (a key of `spriteAssets`): the one a `UIText` gives its text, and the one `TmpTextHelper.CombineEmojiSequences` reads for a text without a sprite asset. |
-| `coverage` | object | `characters` (distinct characters shown), `missing` (as strings, not the characters a sprite draws: with game fonts the characters no font asset of the chain has, which TextMeshPro draws as its missing glyph (`missingGlyph`); with open fonts the characters the game's font assets have and the font file lacks, which the player does not lay out: a text that shows one fails), `missingGlyph` (optional: the characters of the font assets' `missingGlyph`, as strings, ascending), with sprites `sprites` (`characters`: the sprite characters held, `missing`: the names of those without an image), and producer details. |
+| `coverage` | object | `characters` (distinct characters shown), `missing` (as strings, not the characters a sprite draws: with game fonts the characters no font asset of the chain has, which TextMeshPro draws as its missing glyph (`missingGlyph`); with open fonts the characters the game's font assets have and no font file of the open chain has, which the player does not lay out: a text that shows one fails), `missingGlyph` (optional: the characters of the font assets' `missingGlyph`, as strings, ascending), with sprites `sprites` (`characters`: the sprite characters held, `missing`: the names of those without an image), and producer details. |
 | `tmpSettings` | object | Optional (game): the game's TMP Settings values (`m_missingGlyphCharacter`, …). |
 | `lineBreaking` | object | Optional: TextMeshPro's line breaking rules of the game's TMP Settings: `leading` and `following` (the text of its leading and following characters files, as stored) and `useModernHangulLineBreakingRules`. A layout that breaks a line next to a character of these sets needs it. |
 
@@ -484,9 +484,9 @@ A font asset is a TextMeshPro font asset reduced to the characters the episode s
 | `atlases` | The atlas page names (`atlasIndex` of a glyph indexes them). |
 | `normalStyle`, `normalSpacingOffset`, `boldStyle`, `boldSpacing`, `italicStyle`, `tabSize` | TMP font asset style settings. |
 | `material` | The asset's default material (a key of `materials`). |
-| `fallbacks` | Names of the fallback font assets (keys of `fonts`), in search order. |
+| `fallbacks` | Names of the fallback font assets (keys of `fonts`), in search order: TextMeshPro's depth-first search over the fallback tables (each asset once), reduced to the assets in `fonts`. A character the asset lacks is taken from the first of them that has it ([Fallback font assets](#fallback-font-assets)). |
 | `characters` | Code point (decimal string) → `{ glyph, scale, elementType }`: the glyph index (a key of `glyphs`). |
-| `missingGlyph` | Optional: `{ unicode, characters }`: the code points of the episode's texts that the game's font asset lacks with its fallbacks (`characters`, ascending), which TextMeshPro draws as its missing glyph: the character `unicode`, `TMP_Settings.missingGlyphCharacter` (0: U+25A1) when the game's font asset or a fallback has it, else U+0020, else U+0003. The asset or one of its `fallbacks` holds `unicode` (open data: the asset itself), except U+0003, a control character TextMeshPro synthesizes; none of them holds a code point of `characters`. A text with a sprite asset draws those of them its sprite asset has as sprites. A variation selector (U+FE00–U+FE0F, U+E0100–U+E01EF) right after a character of a font asset is not drawn (TextMeshPro replaces it by U+001A, which it skips); after a sprite or a tag it is a character like any other. |
+| `missingGlyph` | Optional: `{ unicode, characters }`: the code points of the episode's texts that the game's font asset lacks with its fallbacks (`characters`, ascending), which TextMeshPro draws as its missing glyph: the character `unicode`, `TMP_Settings.missingGlyphCharacter` (0: U+25A1) when the game's font asset or a fallback has it, else U+0020, else U+0003. The asset or one of its `fallbacks` holds `unicode`, except U+0003, a control character TextMeshPro synthesizes; none of them holds a code point of `characters`. A text with a sprite asset draws those of them its sprite asset has as sprites. A variation selector (U+FE00–U+FE0F, U+E0100–U+E01EF) right after a character of a font asset is not drawn (TextMeshPro replaces it by U+001A, which it skips); after a sprite or a tag it is a character like any other. |
 | `glyphs` | Glyph index (decimal string) → `{ metrics, rect, scale, atlasIndex, packed, runtime }`: `metrics` (`m_Width`, `m_Height`, `m_HorizontalBearingX`, `m_HorizontalBearingY`, `m_HorizontalAdvance`, px at the point size), `rect` (`m_X`, `m_Y`, `m_Width`, `m_Height`, texels of the atlas, origin bottom left), `scale`, `atlasIndex` (page, or `null` for a glyph a dynamic asset adds at runtime), `packed` (`{ texture, dx, dy }`: the glyph page of `textures` holding the glyph's texels and the integer offset from `rect` to them; absent for an empty rect), `runtime` (optional, `true`: generated as a dynamic font asset adds it). |
 | `glyphPairAdjustmentRecords`, `glyphPairAdjustments` | The number of glyph pair adjustment records of the asset and, when it is not 0, the lookup reduced to the exported glyphs: key (`first | second << 16`) → `{ first, second, flags }` with value records `{ xPlacement, yPlacement, xAdvance, yAdvance }`. |
 | `runtimeCharacters`, `runtimeGlyphs` | Game data: the characters a dynamic asset generates at runtime and how (else `[]` and `null`). |
@@ -499,6 +499,26 @@ underline and `<mark>` highlight draw with the `_` glyph of the text's own font 
 asset's first page. Open data put it on page 0; game data keep the game asset's glyph and record in
 `coverage.underline` (`font`, `character`, `inAsset`) whether the full game asset has it, so that a missing `_` is
 told apart from a reduced glyph set.
+
+### Fallback font assets
+
+A text finds a character as `TMP_Text.GetTextElement` does: in its font asset, then in the asset's `fallbacks` in
+order, then in its sprite asset; a character none has takes the missing glyph (`missingGlyph`), which is looked up the
+same way. A character from a fallback asset is laid out with that asset's face info, glyph metrics and style
+settings, and drawn from that asset's pages with the fallback material of the text's material:
+`TMP_MaterialManager.GetFallbackMaterial` (TMP Settings' `matchMaterialPreset`), a material named
+`<text material> + <fallback asset>` in `materials`, which holds the text material's shader, keywords and values
+except `_MainTex`, `_GradientScale`, `_TextureWidth`, `_TextureHeight`, `_WeightNormal` and `_WeightBold`,
+which are those of the fallback asset's default material, and `_ScaleRatioA` / `_ScaleRatioC`, which are
+`ShaderUtilities.UpdateShaderRatios` of the result (float32). Every text material of a binding has one per fallback
+of its font asset.
+
+Open data mirror the game's chains. The open asset standing for a game font asset has as fallbacks the open assets
+standing for the game asset's fallbacks: the one for a game asset is drawn from the font file of the language
+`LocalizeManager` lists that asset for (the language of the document when it lists it, else the first in
+LanguageMode order); the game's own fallback assets that no language lists have none. A fallback asset holds the
+characters of the texts that the assets before it in the chain lack and its font file has, and U+005F only when a
+text shows it there; an asset that would hold no character is left out.
 
 A glyph's texels are the texels `rect` + (`dx`, `dy`) of its page (the same sampling as the full atlas: the page holds
 each glyph with the texels a draw can sample around it). A material's `_TextureWidth` / `_TextureHeight` are those of
@@ -514,7 +534,10 @@ scale relations: each takes the point
 size, padding and style settings of the game font asset the text uses in that language, its face info and glyph metrics come from the font
 file at that point size, and its materials are the game's text materials of that language with the page as
 `_MainTex`. A game asset of an anti-aliased distance-field render mode (`SDFAA`) gets a distance field of the same
-spread, recorded as `SDF` in `atlasRenderMode` (the game render mode is in `source.generator`). Line breaks can differ from the game where the font's advances differ; the layout rules are the same.
+spread, recorded as `SDF` in `atlasRenderMode` (the game render mode is in `source.generator`). A character the
+language's font file lacks is taken from the fallback chain ([Fallback font assets](#fallback-font-assets)); one no
+font file of the chain has is in `coverage.missing`. Line breaks can differ from the game where the font's advances
+differ; the layout rules are the same.
 
 ### Sprite assets
 
@@ -620,7 +643,9 @@ Besides the charts and models, validates `stories.json` and every story (or the 
   the text nodes of `dialogs` (`dialogTexts`), the texts of `chatTexts` and the text nodes of the frames of
   `frames.json` (`frameTexts`), with game fonts none of them; fallbacks, material keys, `characters` → `glyphs`
   references, glyph pages named by `packed` present in the group with their described size; every glyph's `rect` +
-  offset inside its page; a font asset's `missingGlyph` as described above (with `tmpSettings`, also which character
+  offset inside its page; `fallbacks` without the asset itself and without repeats, and the fallback material of
+  every binding's text material per fallback of its font asset, with the values `GetFallbackMaterial` gives; a font
+  asset's `missingGlyph` as described above (with `tmpSettings`, also which character
   `unicode` is) and `coverage.missingGlyph` equal to the characters of all of them; with `spriteAssets`:
   `emojiSpriteAsset` one of them, each sprite asset's material of shader `TextMeshPro/Sprite`, its characters in index
   order with their glyphs, its glyph pages as for font assets, `coverage.sprites` (the characters held, the missing

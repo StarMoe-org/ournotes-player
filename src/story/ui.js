@@ -293,18 +293,24 @@ export class StoryUI {
 
   // TMP_Text.fontMaterial (an instance of the shared material, created once and kept as the shared material) with
   // Material.SetColor(_OutlineColor, c); the instance is compiled with the other materials (now when GL is loaded)
+  // The fallback materials of the text's font asset (TMP_MaterialManager.GetFallbackMaterial of the instance: its
+  // values, re-synced when they change) get instances of their own, "<instance> + <fallback asset>".
   _setOutlineColor(node, c) {
-    const t = node.text;
+    const t = node.text, fallbacks = t.font.fallbacks || [];
     let name = t.materialName;
     if (!this._materialInstances.has(name)) {
-      const base = this.fonts.materials[name];
-      if (!base) throw new UIError(`${node.path}: material ${name} not in the data`);
-      this._materialInstances.set(`${name} (Instance ${node.path})`, { ...base, baseName: name, colors: { ...(base.colors || {}) } });
-      name = `${name} (Instance ${node.path})`;
+      const inst = `${name} (Instance ${node.path})`;
+      for (const [from, to] of [[name, inst], ...fallbacks.map((fb) => [`${name} + ${fb}`, `${inst} + ${fb}`])]) {
+        const base = this.fonts.materials[from];
+        if (!base) throw new UIError(`${node.path}: material ${from} not in the data`);
+        this._materialInstances.set(to, { ...base, baseName: from, colors: { ...(base.colors || {}) } });
+      }
+      name = inst;
       t.materialName = name;
     }
-    this._materialInstances.get(name).colors._OutlineColor = { r: c.r, g: c.g, b: c.b, a: c.a };
-    if (this.materials) this._addMaterials(new Map([[name, this._materialInstances.get(name)]]), this.fonts.materialKeywords);
+    const names = [name, ...fallbacks.map((fb) => `${name} + ${fb}`)];
+    for (const n of names) this._materialInstances.get(n).colors._OutlineColor = { r: c.r, g: c.g, b: c.b, a: c.a };
+    if (this.materials) this._addMaterials(new Map(names.map((n) => [n, this._materialInstances.get(n)])), this.fonts.materialKeywords);
   }
 
   // GameObjectExtension.SetActiveFast: no-op when activeSelf already equals v. Behaviours of a subtree that becomes

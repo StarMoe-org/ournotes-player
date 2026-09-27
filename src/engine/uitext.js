@@ -23,7 +23,10 @@ import { UIError, UIMesh, uiColor32 } from "./ugui.js";
 // tabSize, characters {"<code point>": {glyph, scale}}, glyphs {"<index>": {metrics, rect, scale, atlasIndex,
 // packed {texture, dx, dy}, runtime?}}, glyphPairAdjustmentRecords, glyphPairAdjustments?, textureSize {page: {width,
 // height}}, lineBreaking? {leading, following, useModernHangulLineBreakingRules} (TMP_Settings) }.
-// A text with `t.spriteAsset` (TMP_Text.spriteAsset: a name) draws the characters its font asset lacks from that
+// A font asset record's `fallbacks` (names, in search order) are further font asset records (host.fontAsset): a
+// character the text's asset lacks comes from the first of them that has it, laid out with that asset's face and style
+// and drawn with the fallback material host.material("<text material> + <fallback asset>").
+// A text with `t.spriteAsset` (TMP_Text.spriteAsset: a name) draws the characters its font assets lack from that
 // sprite asset when it has them: host.spriteAsset(name) -> sprite asset record { name, faceInfo, characters [{index,
 // unicode, name, glyph, scale}] (the sprite character table, in order), glyphs {"<index>": {metrics, rect, scale,
 // packed? {texture, dx, dy}}}, material (a text host material name: the sprite shader, sampling the sheet),
@@ -372,6 +375,7 @@ export class TMPText {
   constructor(host, node, t) {
     const loc = t.localized;
     if (!loc) throw new UIError(`${node.path}: text without its localized font binding`);
+    this.host = host;
     this.node = node;
     this.cls = t.class;
     this.font = host.fontAsset(loc.fontAsset);
@@ -412,11 +416,7 @@ export class TMPText {
     for (const f of features)
       if (TMP_UNSUPPORTED_FEATURES[f]) throw new UIError(`${node.path}: font feature ${TMP_UNSUPPORTED_FEATURES[f]} not implemented`);
     this.kerning = features.includes(TMP_KERN);
-    this.pairs = null;
-    if (this.kerning && this.font.glyphPairAdjustmentRecords) {
-      this.pairs = this.font.glyphPairAdjustments;
-      if (!this.pairs) throw new UIError(`${this.font.name}: glyph pair adjustment records missing`);
-    }
+    this._pairs(this.font);
     if (!t.m_isOrthographic) throw new UIError(`${node.path}: perspective text not implemented`);
     if (t.m_isRightToLeft || t.m_enableVertexGradient || t.m_characterHorizontalScale !== 1 ||
         t.m_horizontalMapping !== 0 || t.m_verticalMapping !== 0 || t.m_overflowMode !== 0)
@@ -425,7 +425,9 @@ export class TMPText {
         ![TMP_V.Top, TMP_V.Middle, TMP_V.Bottom].includes(this.vAlign))
       throw new UIError(`${node.path}: alignment ${this.hAlign}/${this.vAlign} not implemented`);
     if (![0, 1].includes(this.wrapping)) throw new UIError(`${node.path}: wrapping mode ${this.wrapping} not implemented`);
-    this.padding = TMPText.materialPadding(this.material, !!t.m_enableExtraPadding);
+    this.extraPadding = !!t.m_enableExtraPadding;
+    this.padding = TMPText.materialPadding(this.material, this.extraPadding);
+    this._fontMats = new Map();              // fallback material name -> {material, padding}
     this.text = "";
     this.tokens = [];
     this.elements = [];
@@ -503,12 +505,14 @@ export class TMPText {
     if (mode !== this.wrapping) { this.wrapping = mode; this.dirty = true; }
   }
 
-  // SetArraySizes character lookup: the text's font asset (fallback fonts are resolved by the data: every character
-  // a text shows through a font is in its asset), then the text's sprite asset by code point
+  // SetArraySizes character lookup (TMP_Text.GetTextElement): the text's font asset with its fallbacks
+  // (GetCharacterFromFontAsset: its own characters, TextMeshPro's synthesized control characters, then the fallback
+  // assets in the depth-first order `fallbacks` lists), then the text's sprite asset by code point
   // (GetSpriteCharacterFromSpriteAsset), then the missing glyph: a code point of the font asset's `missingGlyph`
   // characters (the ones the game's font assets lack) becomes its substitute `unicode` (TMP_Settings.missingGlyphCharacter,
-  // else U+0020, else U+0003, as the game's fonts have it), looked up in the font asset alone. Any other code point
-  // raises. -> {g: glyph record, charScale, index: glyph index, sprite?: the sprite asset, u?: the substitute}
+  // else U+0020, else U+0003, as the game's fonts have it), looked up in the font asset with its fallbacks. Any other
+  // code point raises. -> {g: glyph record, charScale, index: glyph index, font: the font asset record, sprite?: the
+  // sprite asset, u?: the substitute}
   glyphOf(u) {
     const f = this.font, e = this._fontGlyph(u);
     if (e) return e;
@@ -523,16 +527,54 @@ export class TMPText {
     throw new UIError(`${f.name}: U+${u.toString(16).toUpperCase()} not in the font data`);
   }
 
-  // the font asset's character of `u` (a synthesized control character the asset lacks: TMP's zero glyph) or null
+  // the character of `u` in the font asset (a synthesized control character it lacks: TMP's zero glyph), else in its
+  // fallbacks in order, or null
   _fontGlyph(u) {
-    const f = this.font, c = f.characters[String(u)];
-    if (c) {
-      const g = f.glyphs[String(c.glyph)];
-      if (!g) throw new UIError(`${f.name}: glyph ${c.glyph} of U+${u.toString(16).toUpperCase()} missing`);
-      return { g, charScale: c.scale, index: c.glyph };
+    const own = TMPText._character(this.font, u);
+    if (own) return own;
+    if (TMP_SYNTHESIZED.has(u)) return { g: TMP_ZERO_GLYPH, charScale: 1, index: 0, font: this.font };
+    for (const f of this._fallbacks()) {
+      const e = TMPText._character(f, u);
+      if (e) return e;
     }
-    if (TMP_SYNTHESIZED.has(u)) return { g: TMP_ZERO_GLYPH, charScale: 1, index: 0 };
     return null;
+  }
+
+  static _character(f, u) {
+    const c = f.characters[String(u)];
+    if (!c) return null;
+    const g = f.glyphs[String(c.glyph)];
+    if (!g) throw new UIError(`${f.name}: glyph ${c.glyph} of U+${u.toString(16).toUpperCase()} missing`);
+    return { g, charScale: c.scale, index: c.glyph, font: f };
+  }
+
+  // the fallback font asset records of the text's font asset, in search order
+  _fallbacks() {
+    if (!this._fallbackFonts) this._fallbackFonts = (this.font.fallbacks || []).map((n) => this.host.fontAsset(n));
+    return this._fallbackFonts;
+  }
+
+  // the material a character of font asset `f` draws with: the text material, or for a fallback asset the fallback
+  // material TMP_MaterialManager.GetFallbackMaterial makes ("<text material> + <asset>"), with its padding
+  // (TMP_SubMeshUI: ShaderUtilities.GetPadding of its material) -> {name, material, padding}
+  _fontMat(f) {
+    if (f === this.font) return { name: this.materialName, material: this.material, padding: this.padding };
+    const name = `${this.materialName} + ${f.name}`;
+    let r = this._fontMats.get(name);
+    if (!r) {
+      const material = this.host.material(name);
+      if (!material) throw new UIError(`${this.node.path}: fallback material ${name} not in the data`);
+      r = { name, material, padding: TMPText.materialPadding(material, this.extraPadding) };
+      this._fontMats.set(name, r);
+    }
+    return r;
+  }
+
+  // the glyph pair adjustment lookup of font asset `f` when kerning is on (null without records)
+  _pairs(f) {
+    if (!this.kerning || !f.glyphPairAdjustmentRecords) return null;
+    if (!f.glyphPairAdjustments) throw new UIError(`${f.name}: glyph pair adjustment records missing`);
+    return f.glyphPairAdjustments;
   }
 
   // One rich-text tag on the style state s (ValidateHtmlTag, the tags this port implements). `at` = the layout
@@ -628,9 +670,10 @@ export class TMPText {
     throw new UIError(`${this.node.path}: rich text tag <${tok.body}> not implemented`);
   }
 
-  // per-character scales (GenerateTextMesh character lookup): element scale, face baseline offset
+  // per-character scales (GenerateTextMesh character lookup, the face info of the character's font asset): element
+  // scale, face baseline offset
   _charScale(size, e) {
-    const fi = this.font.faceInfo;
+    const fi = e.font.faceInfo;
     const adjusted = F(F(size / fi.m_PointSize) * fi.m_Scale);
     return { adjusted, scale: F(F(adjusted * e.charScale) * e.g.scale),
              faceBaseline: F(F(fi.m_Baseline * adjusted) * fi.m_Scale) };
@@ -655,27 +698,30 @@ export class TMPText {
              ascender: F(fi.m_AscentLine * delta), descender: F(delta * fi.m_DescentLine) };
   }
 
-  // style padding of a character (normal / bold): style * GradientScale * ScaleRatioA / 4, with the material padding
-  // clamped to the gradient scale -> {P, SP, boldSpacing}
-  _stylePadding(bold) {
-    const mat = this.material.floats, GS = mat._GradientScale;
-    const SP = F(F(F((bold ? this.font.boldStyle : this.font.normalStyle) / 4) * GS) * mat._ScaleRatioA);
-    const P = F(SP + this.padding) > GS ? F(GS - SP) : this.padding;
-    return { P, SP, boldSpacing: bold ? this.font.boldSpacing : 0 };
+  // style padding of a character of font asset `f` (normal / bold): the asset's style * GradientScale * ScaleRatioA / 4
+  // of the material it draws with, with that material's padding clamped to the gradient scale -> {P, SP, boldSpacing}
+  _stylePadding(bold, f = this.font) {
+    const fm = this._fontMat(f), mat = fm.material.floats, GS = mat._GradientScale;
+    const SP = F(F(F((bold ? f.boldStyle : f.normalStyle) / 4) * GS) * mat._ScaleRatioA);
+    const P = F(SP + fm.padding) > GS ? F(GS - SP) : fm.padding;
+    return { P, SP, boldSpacing: bold ? f.boldSpacing : 0 };
   }
 
-  // advance spacing after a glyph besides its own: emScale * (boldSpacing + (characterSpacing + normalSpacingOffset))
-  _spacing(emScale, characterSpacing, boldSpacing) {
-    return F(F(F(this.font.normalSpacingOffset + characterSpacing) + boldSpacing) * emScale);
+  // advance spacing after a glyph besides its own: emScale * (boldSpacing + (characterSpacing + normalSpacingOffset of
+  // the character's font asset))
+  _spacing(emScale, characterSpacing, boldSpacing, f = this.font) {
+    return F(F(F(f.normalSpacingOffset + characterSpacing) + boldSpacing) * emScale);
   }
 
   // Kerning of character i: the first value record of the pair (i, i + 1) plus the second of (i - 1, i), key first
-  // glyph | second glyph << 16. Flag IgnoreSpacingAdjustments zeroes the character spacing. Placement adjustments
-  // are not implemented (raise). A sprite has none, and a sprite neighbour gives no pair (the lookups read
-  // character elements only). -> {xAdvance, characterSpacing}
+  // glyph | second glyph << 16, in the lookup of character i's font asset (the neighbour's glyph index as it is, of
+  // whichever asset). Flag IgnoreSpacingAdjustments zeroes the character spacing. Placement adjustments are not
+  // implemented (raise). A sprite has none, and a sprite neighbour gives no pair (the lookups read character
+  // elements only). -> {xAdvance, characterSpacing}
   _adjust(i, els = this.elements) {
     const out = { xAdvance: 0, characterSpacing: this.characterSpacing };
-    if (!this.pairs || els[i].sprite) return out;
+    const pairs = els[i].sprite ? null : this._pairs(els[i].font);
+    if (!pairs) return out;
     const base = els[i].index;
     let xPl = 0, yPl = 0;
     const take = (r, which) => {
@@ -684,11 +730,11 @@ export class TMPText {
       if (r.flags & TMP_IGNORE_SPACING) out.characterSpacing = 0;
     };
     if (i < els.length - 1 && !els[i + 1].sprite) {
-      const r = this.pairs[String((base | (els[i + 1].index << 16)) >>> 0)];
+      const r = pairs[String((base | (els[i + 1].index << 16)) >>> 0)];
       if (r) take(r, "first");
     }
     if (i >= 1 && !els[i - 1].sprite) {
-      const r = this.pairs[String((els[i - 1].index | (base << 16)) >>> 0)];
+      const r = pairs[String((els[i - 1].index | (base << 16)) >>> 0)];
       if (r) take(r, "second");
     }
     if (xPl !== 0 || yPl !== 0) throw new UIError(`${this.node.path}: glyph placement adjustments not implemented`);
@@ -783,10 +829,10 @@ export class TMPText {
       const elementScale = u === 0x03 ? 0 : (sp || this._charScale(st.size, e)).scale;   // end of text: scale 0
       const ws = u <= 0xFFFF && isWhiteSpace(u);
       const adj = this._adjust(cc, els);
-      const { boldSpacing } = sp ? SPRITE_PADDING : this._stylePadding(isBold(st));
-      const bo = st.baselineOffset;
-      const elementAscender = sp ? F(F(elementScale * sp.ascender) + bo) : F(F(fi.m_AscentLine * elementScale) + bo);
-      const elementDescender = sp ? F(F(elementScale * sp.descender) + bo) : F(F(fi.m_DescentLine * elementScale) + bo);
+      const { boldSpacing } = sp ? SPRITE_PADDING : this._stylePadding(isBold(st), e.font);
+      const bo = st.baselineOffset, efi = sp ? fi : e.font.faceInfo;       // the character's font asset's face
+      const elementAscender = sp ? F(F(elementScale * sp.ascender) + bo) : F(F(efi.m_AscentLine * elementScale) + bo);
+      const elementDescender = sp ? F(F(elementScale * sp.descender) + bo) : F(F(efi.m_DescentLine * elementScale) + bo);
       const isFirstOfLine = cc === L.firstCharOfLine;
       const c = ci[cc] = { u, xAdvance: 0, lineNumber: L.lineNumber, adjustedAscender: 0 };
       if (isFirstOfLine || !ws) {
@@ -841,12 +887,13 @@ export class TMPText {
       }
       // xAdvance: pair adjustment, spacing, <cspace>, word spacing, tab stops (no monospace)
       if (u === 9) {
-        const tabSize = F(F(fi.m_TabWidth * this.font.tabSize) * elementScale);
+        const tabSize = F(F(efi.m_TabWidth * e.font.tabSize) * elementScale);
         const tabs = F(Math.ceil(F(L.xAdvance / tabSize)) * tabSize);
         L.xAdvance = tabs > L.xAdvance ? tabs : F(L.xAdvance + tabSize);
       } else {
         const adv = adj.xAdvance === 0 ? m.m_HorizontalAdvance : F(m.m_HorizontalAdvance + adj.xAdvance);
-        L.xAdvance = F(L.xAdvance + F(F(F(adv * elementScale) + this._spacing(emScale, adj.characterSpacing, boldSpacing)) + st.cSpacing));
+        const spacing = this._spacing(emScale, adj.characterSpacing, boldSpacing, sp ? this.font : e.font);
+        L.xAdvance = F(L.xAdvance + F(F(F(adv * elementScale) + spacing) + st.cSpacing));
         if (ws || u === 0x200B) L.xAdvance = F(L.xAdvance + F(this.wordSpacing * emScale));
       }
       c.xAdvance = L.xAdvance;
@@ -1041,7 +1088,8 @@ export class TMPText {
       if (u === 0xAD) throw new UIError(`${this.node.path}: soft hyphen not implemented`);
       const sp = e.sprite ? this._spriteScale(st.size, e) : null;
       const { scale, faceBaseline } = sp || this._charScale(st.size, e);
-      const bold = !sp && isBold(st), { P, SP, boldSpacing } = sp ? SPRITE_PADDING : this._stylePadding(bold);
+      const bold = !sp && isBold(st), { P, SP, boldSpacing } = sp ? SPRITE_PADDING : this._stylePadding(bold, e.font);
+      const efi = sp ? fi : e.font.faceInfo;                              // the character's font asset's face
       const ws = u <= 0xFFFF && isWhiteSpace(u);
       const adj = this._adjust(cc);
       const bo = st.baselineOffset;
@@ -1059,15 +1107,15 @@ export class TMPText {
           return [F(F(F(cs * dx) - F(sn * dy)) + ox), F(F(F(sn * dx) + F(cs * dy)) + oy)];
         });
       }
-      const c = { u, g: e.g, sprite: e.sprite || null, scale, P, SP, bold, x0, y0, x1, y1, corners, lineNumber: L.lineNumber,
+      const c = { u, g: e.g, sprite: e.sprite || null, font: sp ? null : e.font, scale, P, SP, bold, x0, y0, x1, y1, corners, lineNumber: L.lineNumber,
                   visible: false, color: null,
                   baselineY: F(F(faceBaseline - L.lineOffset) + bo), origin: L.xAdvance,
                   hl: st.markCount > 0 ? st.hlState : null, rotated: st.rotate !== null, kern: adj.xAdvance,
                   underline: st.ulCount > 0, ulColor: st.ulColor };
       chars[cc] = c;
       // ascender / descender in line space (a sprite's: no small caps division)
-      const elementAscender = sp ? F(F(scale * sp.ascender) + bo) : F(F(fi.m_AscentLine * scale) + bo);
-      const elementDescender = sp ? F(F(scale * sp.descender) + bo) : F(F(fi.m_DescentLine * scale) + bo);
+      const elementAscender = sp ? F(F(scale * sp.ascender) + bo) : F(F(efi.m_AscentLine * scale) + bo);
+      const elementDescender = sp ? F(F(scale * sp.descender) + bo) : F(F(efi.m_DescentLine * scale) + bo);
       const isFirstOfLine = cc === L.firstCharOfLine;
       if (isFirstOfLine || !ws) {
         let aa = elementAscender, ad = elementDescender;
@@ -1083,7 +1131,7 @@ export class TMPText {
         L.elementDescender = c.descender;
       }
       if (L.lineNumber === 0 && (isFirstOfLine || !ws)) L.maxTextAscender = L.maxLineAscender;
-      const spacing = this._spacing(emScale, adj.characterSpacing, boldSpacing);
+      const spacing = this._spacing(emScale, adj.characterSpacing, boldSpacing, sp ? this.font : e.font);
       // visible characters (sprites always): bounds checks (autosize, word wrap), vertex colour
       if (sp || TMPText._visible(u)) {
         const textWidth = F(Math.abs(L.xAdvance) + F(m.m_HorizontalAdvance * scale));
@@ -1155,7 +1203,7 @@ export class TMPText {
       if (u !== 10 && u !== 11 && u !== 13) line(L.lineNumber).alignment = st.align;
       // xAdvance: pair adjustment, spacing, <cspace>, word spacing, tab stops (no monospace)
       if (u === 9) {
-        const tabSize = F(F(fi.m_TabWidth * this.font.tabSize) * scale);
+        const tabSize = F(F(efi.m_TabWidth * e.font.tabSize) * scale);
         const tabs = F(Math.ceil(F(L.xAdvance / tabSize)) * tabSize);
         L.xAdvance = tabs > L.xAdvance ? tabs : F(L.xAdvance + tabSize);
       } else {
@@ -1241,7 +1289,6 @@ export class TMPText {
       ay = F(F((cyBottom + cyTop) / 2) - F(F(F(F(mta + mg.y) + maxVisibleDescender) - mg.w) / 2));
     } else { ax = F(cx + mg.x); ay = F(F(cyBottom - maxVisibleDescender) + mg.w); }
     this.anchor = { x: ax, y: ay };
-    const fontTex = this.font.textureSize;
     chars.length = L.cc;
     for (const [i, c] of chars.entries()) {
       const ln = lines[c.lineNumber];
@@ -1274,9 +1321,9 @@ export class TMPText {
       // uvs: glyph rect grown by padding + style padding (SaveGlyphVertexInfo), moved into the page by the packed
       // integer offset
       const gr = c.g.rect, pk = c.g.packed;
-      if (!pk) throw new UIError(`${this.font.name}: glyph for U+${c.u.toString(16)} has no atlas page`);
-      const page = fontTex[pk.texture];
-      if (!page) throw new UIError(`${this.font.name}: atlas page ${pk.texture} missing`);
+      if (!pk) throw new UIError(`${c.font.name}: glyph for U+${c.u.toString(16)} has no atlas page`);
+      const page = c.font.textureSize[pk.texture];
+      if (!page) throw new UIError(`${c.font.name}: atlas page ${pk.texture} missing`);
       const tw = page.width, th = page.height, P2 = F(c.P + c.SP);
       c.texture = pk.texture;
       c.uv = [F(F(F(gr.m_X - P2) + pk.dx) / tw), F(F(F(gr.m_Y - P2) + pk.dy) / th),
@@ -1455,16 +1502,23 @@ export class TMPText {
   // xScale), uv1 = per-glyph (0,0)..(1,1). Glyphs on atlas page k > 0 draw through TMP_SubMeshUI children with a
   // fallback material per page: draw order = material index order, index 0 the first page, the others in order of
   // first appearance in the text. Glyphs a dynamic font asset adds at run time (runtime) form one more page, indexed at
-  // their first appearance; only the paint order of overlapping quads depends on it. Sprites draw through the sprite
-  // asset's material (a sub mesh of their own, indexed at the first sprite): uv0 = (u, v, 0, 0), uv1 = (0, 0)
-  // (FillSpriteVertexBuffers).
-  // -> [{kind ("text" | "sprite"), material (the text material, or the sprite asset's), chars, verts (local space;
-  // UIDraw.pack with uvw), idx, texture}], after generate()
+  // their first appearance; only the paint order of overlapping quads depends on it. The glyphs of a fallback font
+  // asset draw the same way per page of that asset, with the fallback material of the text material. Sprites draw
+  // through the sprite asset's material (a sub mesh of their own, indexed at the first sprite): uv0 = (u, v, 0, 0),
+  // uv1 = (0, 0) (FillSpriteVertexBuffers).
+  // -> [{kind ("text" | "sprite"), material (the text material, a fallback material, or the sprite asset's), chars,
+  // verts (local space; UIDraw.pack with uvw), idx, texture}], after generate()
   meshes() {
     this.generate();
-    const groups = new Map([[0, []]]);
+    const groups = new Map([[0, []]]), materials = new Map([[0, this.materialName]]);
     for (const c of this.chars) {
-      const key = c.sprite ? `sprite ${c.sprite.name}` : c.g.runtime ? "runtime" : (c.g.atlasIndex || 0);
+      let key;
+      if (c.sprite) key = `sprite ${c.sprite.name}`;
+      else {
+        const page = c.g.runtime ? "runtime" : (c.g.atlasIndex || 0);
+        key = c.font === this.font ? page : `${c.font.name}#${page}`;
+        if (!materials.has(key)) materials.set(key, this._fontMat(c.font).name);
+      }
       if (!groups.has(key)) groups.set(key, []);
       if (c.visible && c.quad) groups.get(key).push(c);
     }
@@ -1494,7 +1548,7 @@ export class TMPText {
         for (let s = verts.length, k = 0; k < h.verts.length; k += 4, s += 4) idx.push(s, s + 1, s + 2, s + 2, s + 3, s);
         verts.push(...h.verts);
       }
-      out.push({ kind: sprite ? "sprite" : "text", material: sprite ? this.spriteAsset.material : this.materialName,
+      out.push({ kind: sprite ? "sprite" : "text", material: sprite ? this.spriteAsset.material : materials.get(key),
                  chars, verts, idx, texture });
     }
     return out;

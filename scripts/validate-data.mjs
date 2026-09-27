@@ -22,9 +22,10 @@
 // story.json, episode.json, the required commands against the episode's rows and the player settings, the cue sheets
 // (cues.json, waveform files and their FLAC / MP4 headers), the Live2D models (moc3 header, prefab, textures, shader
 // variants), both shader directories, texture descriptors, and per language ui/ui.json, ui/languages.json and
-// ui/fonts.json (text bindings, the dialog, chat window and frame bindings, font assets and their missing glyph, sprite
-// assets, glyph pages, text material shaders). An Overlay story built with open fonts: its host (host/host.json and,
-// per language, ui/simple/ui.json with ui/simple/fonts.json). A story id is the manifest path below stories/ without .json (`10462`, `tw/10462`).
+// ui/fonts.json (text bindings, the dialog, chat window and frame bindings, font assets with their fallbacks and
+// missing glyph, fallback materials, sprite assets, glyph pages, text material shaders). An Overlay story built with
+// open fonts: its host (host/host.json and, per language, ui/simple/ui.json with ui/simple/fonts.json). A story id is
+// the manifest path below stories/ without .json (`10462`, `tw/10462`).
 // Prints the failures and a summary; exits 1 when a chart, a model or a story fails. No dependencies.
 
 import crypto from "node:crypto";
@@ -561,6 +562,28 @@ const TMP_SPRITE_SHADER = "TextMeshPro/Sprite";
 // character TextMeshPro synthesizes: no font asset needs to hold it)
 const TMP_MISSING_GLYPH = 0x25A1, TMP_SPACE = 0x20, TMP_END_OF_TEXT = 0x03;
 const hexU = (u) => `U+${u.toString(16).toUpperCase().padStart(4, "0")}`;
+// TMP_MaterialManager.GetFallbackMaterial: the values a fallback material takes from the fallback asset's material
+// (_TextureWidth / _TextureHeight too, which the player sets per page) and the ratios UpdateShaderRatios recomputes
+const FALLBACK_OWN = new Set(["_GradientScale", "_TextureWidth", "_TextureHeight", "_WeightNormal", "_WeightBold",
+  "_ScaleRatioA", "_ScaleRatioB", "_ScaleRatioC"]);
+// ShaderUtilities.UpdateShaderRatios in float32 -> {a, c (null without the underlay properties)}, null without
+// _FaceDilate (the material's ratios then stay)
+const scaleRatios = (fl, keywords) => {
+  if (!("_FaceDilate" in fl)) return null;
+  const F = Math.fround, on = !keywords.includes("RATIOS_OFF");
+  const gs = F(fl._GradientScale), dilate = F(fl._FaceDilate);
+  const w = F(Math.max(F(fl._WeightNormal ?? 0), F(fl._WeightBold ?? 0)) / 4);
+  let t = Math.max(1, F(F(F(w + dilate) + F(fl._OutlineWidth ?? 0)) + F(fl._OutlineSoftness ?? 0)));
+  const a = on ? F(F(gs - 1) / F(gs * t)) : 1;
+  let c = null;
+  if ("_UnderlayOffsetX" in fl) {
+    const range = F(F(w + dilate) * F(gs - 1));
+    t = Math.max(1, F(F(Math.max(Math.abs(F(fl._UnderlayOffsetX)), Math.abs(F(fl._UnderlayOffsetY ?? 0))) + F(fl._UnderlayDilate ?? 0)) + F(fl._UnderlaySoftness ?? 0)));
+    c = on ? F(Math.max(0, F(F(gs - 1) - range)) / F(gs * t)) : 1;
+  }
+  return { a, c };
+};
+const mainTexName = (m) => (isObj(m.textures) && isObj(m.textures._MainTex) && isObj(m.textures._MainTex.texture) ? m.textures._MainTex.texture.name : null);
 // the text nodes of frames.json: frame name -> {node path: node} of the nodes with a TextMeshPro component (frames
 // without one left out)
 const frameTextNodes = (doc) => {
@@ -598,6 +621,7 @@ class Story extends Chart {
     this.common = this.files;
     this.groups = isObj(man.languages) ? man.languages : {};
     this.lang = null;                 // the language group being checked (error prefix)
+    this.fallbackSeen = new Set();    // the fallback materials checked (document, text material, fallback asset)
   }
 
   err(where, msg) { this.errs.push(`${this.lang ? `[${this.lang}] ` : ""}${where}: ${msg}`); }
@@ -926,10 +950,39 @@ class Story extends Chart {
     if (!isObj(t) || !isObj(t.localized)) { this.err(F, `${where}: no localized record`); return; }
     if (!has(fj.fonts, t.localized.fontAsset)) this.err(F, `${where}: font asset ${t.localized.fontAsset} not in fonts`);
     if (!has(fj.materials, t.localized.material)) this.err(F, `${where}: material ${t.localized.material} not in materials`);
+    this.fallbackMaterials(F, t.localized, fj);
     if (!has(t, "spriteAsset")) return;
     if (!has(fj.spriteAssets, t.spriteAsset)) this.err(F, `${where}: sprite asset ${t.spriteAsset} not in spriteAssets`);
     else if (t.spriteAsset !== fj.emojiSpriteAsset) this.err(F, `${where}: sprite asset ${t.spriteAsset}, emojiSpriteAsset ${fj.emojiSpriteAsset}`);
     if (!has(t, "m_tintAllSprites")) this.err(F, `${where}: a sprite asset without m_tintAllSprites`);
+  }
+
+  // the fallback materials of a text material M of font asset P (TMP_MaterialManager.GetFallbackMaterial with
+  // TMP_Settings.matchMaterialPreset): per fallback F of P the material "M + F", with M's shader, keywords and values
+  // except F's default material's _MainTex, _GradientScale, _WeightNormal and _WeightBold, and the ratios
+  // UpdateShaderRatios gives for those
+  fallbackMaterials(F, loc, fj) {
+    const f = fj.fonts[loc.fontAsset], m = fj.materials[loc.material];
+    if (!isObj(f) || !isObj(m)) return;
+    for (const fb of f.fallbacks) {
+      const key = `${this.lang}|${F}|${loc.material}|${fb}`;
+      if (this.fallbackSeen.has(key)) continue;
+      this.fallbackSeen.add(key);
+      const name = `${loc.material} + ${fb}`, x = fj.materials[name];
+      const target = isObj(fj.fonts[fb]) ? fj.materials[fj.fonts[fb].material] : null;
+      if (!isObj(x)) { this.err(F, `material ${name} (fallback ${fb} of ${loc.fontAsset}) not in materials`); continue; }
+      if (!isObj(target)) continue;
+      const bad = [];
+      if (x.shader.shader !== m.shader.shader || !sameJson(x.keywords, m.keywords)) bad.push("shader / keywords");
+      if (mainTexName(x) !== mainTexName(target)) bad.push("_MainTex");
+      for (const k of ["_GradientScale", "_WeightNormal", "_WeightBold"]) if (x.floats[k] !== target.floats[k]) bad.push(k);
+      for (const k of new Set([...Object.keys(m.floats), ...Object.keys(x.floats)]))
+        if (!FALLBACK_OWN.has(k) && x.floats[k] !== m.floats[k]) bad.push(k);
+      const r = scaleRatios(x.floats, x.keywords);
+      if (r && x.floats._ScaleRatioA !== r.a) bad.push("_ScaleRatioA");
+      if (r && r.c !== null && x.floats._ScaleRatioC !== r.c) bad.push("_ScaleRatioC");
+      if (bad.length) this.err(F, `material ${name}: ${bad.join(", ")} not as GetFallbackMaterial(${loc.material}, ${fj.fonts[fb].material}) gives`);
+    }
   }
 
   // glyph records (font or sprite asset) against the glyph pages: a rect with texels has `packed`, whose page is in
@@ -991,6 +1044,7 @@ class Story extends Chart {
       const where = `${F} fonts.${name}`;
       if (!has(fj.materials, f.material)) this.err(where, `material ${f.material} not in materials`);
       for (const fb of f.fallbacks) if (!has(fj.fonts, fb)) this.err(where, `fallback ${fb} not in fonts`);
+      if (f.fallbacks.includes(name) || new Set(f.fallbacks).size !== f.fallbacks.length) this.err(where, "fallbacks list the asset itself or an asset twice");
       let bad = 0;
       for (const [u, c] of Object.entries(f.characters)) if (!has(f.glyphs, String(c.glyph)) && bad++ < 5) this.err(where, `character ${u}: glyph ${c.glyph} not in glyphs`);
       this.glyphPages(where, f.glyphs, fj.textures);

@@ -355,6 +355,56 @@ test("missing glyph: the listed code points become the substitute; variation sel
   close(text("A\u2605").preferredWidth(), text("AA").preferredWidth(), 1e-6);
 });
 
+test("fallback font assets: lookup through the chain, the asset's face, style and kerning, the fallback material and page", () => {
+  // Fb SDF: point size 50 (twice the scale), ascent 60, spacing offset 10; U+0416 and U+25A1 on its page; a pair
+  // record keyed by its glyph and the primary's glyph 1 (no same-asset check)
+  const fb = { name: "Fb SDF", faceInfo: { ...font.faceInfo, m_PointSize: 50, m_AscentLine: 60, m_DescentLine: -15, m_LineHeight: 75 },
+               normalStyle: 0, normalSpacingOffset: 10, boldStyle: 0.5, boldSpacing: 3, tabSize: 10,
+               characters: { 1046: { glyph: 1, scale: 1, elementType: 1 }, 9633: { glyph: 1, scale: 1, elementType: 1 } },
+               glyphs: { 1: { ...font.glyphs["1"], packed: { texture: "pageFb", dx: 0, dy: 0 } } },
+               glyphPairAdjustmentRecords: 1, glyphPairAdjustments: {
+                 [String((1 | (1 << 16)) >>> 0)]: { flags: 0, first: { xPlacement: 0, yPlacement: 0, xAdvance: -10, yAdvance: 0 },
+                                                    second: { xPlacement: 0, yPlacement: 0, xAdvance: 0, yAdvance: 0 } } },
+               textureSize: { page0: { width: 1024, height: 1024 }, pageFb: { width: 512, height: 512 } } };
+  const pfont = { ...font, fallbacks: ["Fb SDF"], missingGlyph: { unicode: 0x25A1, characters: [0x2605] } };
+  const fbMat = { material: "Test - Default + Fb SDF", keywords: ["OUTLINE_ON"],
+                  floats: { ...material.floats, _GradientScale: 5, _ScaleRatioA: 0.5, _OutlineWidth: 0.2 } };
+  const mats = { "Test - Default": material, "Test - Default + Fb SDF": fbMat };
+  const h = { fontAsset: (n) => (n === "Fb SDF" ? fb : pfont), material: (n) => mats[n] || null };
+  const text = (s, over = {}, hh = h) => {
+    const t = new TMPText(hh, { path: "Test/Text", rect: { x: 0, y: -200, w: 1000, h: 200 } }, record(over));
+    t.setText(s); t.generate();
+    return t;
+  };
+  const t = text("A\u0416");
+  const [a, zh] = t.chars;
+  assert.equal(t.elements[1].font, fb); assert.equal(a.font, pfont);
+  close(a.scale, 0.36); close(zh.scale, 0.72);                  // 36 / 50 of the fallback's face
+  close(t.anchor.y, -43.2);                                     // its ascender 60 x 0.72 raises the line
+  close(zh.xAdvance, F(21.6 + F(F(60 * 0.72) + F(10 * 0.36))));  // its normalSpacingOffset
+  close(zh.P, 1.75);                                            // the fallback material's padding: 0.2 x 0.5 x 5 + 1.25
+  close(zh.x0, F(21.6 + F(F(5 - 1.75) * 0.72)));
+  close(zh.uv[0], (8 - 1.75) / 512, 1e-7);                      // its page
+  const ms = t.meshes();
+  assert.deepEqual(ms.map((m) => [m.material, m.texture, m.chars.length]),
+                   [["Test - Default", "page0", 1], ["Test - Default + Fb SDF", "pageFb", 1]]);
+  // bold: the fallback's boldStyle / boldSpacing with its material's gradient scale and ratio
+  const b = text("A\u0416", { m_fontStyle: 1 });
+  close(b.chars[1].SP, F(F(F(0.5 / 4) * 5) * 0.5));
+  close(b.chars[1].xAdvance - b.chars[0].xAdvance, F(F(60 * 0.72) + F(F(10 + 3) * 0.36)));
+  // the missing glyph through the chain: U+25A1 only in the fallback
+  const m = text("\u2605");
+  assert.equal(m.chars[0].u, 0x25A1); assert.equal(m.chars[0].font, fb);
+  // kerning: the character's own asset's pairs, the neighbour's glyph index as it is
+  const kern = { m_ActiveFontFeatures: [1801810542] };
+  close(text("\u0416A", kern).chars[0].xAdvance, F(F(50 * 0.72) + F(10 * 0.36)));
+  close(text("A\u0416", kern).chars[1].xAdvance, zh.xAdvance);
+  // a fallback material the data lacks
+  assert.throws(() => text("\u0416", {}, { ...h, material: (n) => (n === "Test - Default" ? material : null) }),
+                /fallback material Test - Default \+ Fb SDF not in the data/);
+  assert.throws(() => text("\u2606"), /U\+2606 not in the font data/);
+});
+
 test("<u>: underline runs, colour at the tag, line ends, colour changes, three quads with the '_' glyph after the glyphs", () => {
   const ufont = { ...font, faceInfo: { ...font.faceInfo, m_UnderlineOffset: -10, m_UnderlineThickness: 5 } };
   const text = (s, over = {}, rect = { x: 0, y: -200, w: 1000, h: 200 }, max = null) => {

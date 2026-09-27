@@ -1,7 +1,8 @@
 // The story schemas (schema/stor*.schema.json, episode.schema.json) and the story checks of scripts/validate-data.mjs
 // on a synthetic story site built here: two language groups, one cue sheet with a FLAC waveform, one glyph page per
 // language, a UI shader directory with the distance-field shader; variants with a host (an Overlay story), with chat
-// window, dialog and frame texts, with a missing glyph and with an emoji sprite asset. No game data.
+// window, dialog and frame texts, with a missing glyph, with a fallback font asset and with an emoji sprite asset.
+// No game data.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -219,6 +220,36 @@ const withMissingGlyph = (p) => {
   }
 };
 
+// a fallback font asset: "Fb SDF" (gradient scale 16) behind "Test SDF" (5), its page and default material, and the
+// fallback material of the text material "Test - Outline"; U+53E3 drawn from it
+const withFallback = (p) => {
+  for (const lang of ["ja", "en"]) {
+    const f = p.groups[lang]["ui/fonts.json"], page = `font_Fb ${lang}_0`, test = f.fonts["Test SDF"];
+    const tex = (name, w, h) => ({ _MainTex: { texture: { name, width: w, height: h, format: 4 } } });
+    f.fonts["Fb SDF"] = { ...structuredClone(test), atlases: [page], atlasPadding: 15, material: "Fb SDF Material", fallbacks: [],
+                          characters: { 21475: { glyph: 3, scale: 1, elementType: 1 } } };
+    f.fonts["Fb SDF"].glyphs = { 3: { ...structuredClone(test.glyphs[3]), packed: { texture: page, dx: 0, dy: 0 } } };
+    test.fallbacks = ["Fb SDF"];
+    f.textures[page] = { texture: `fonts/${page}.png`, name: page, width: 16, height: 12, mipCount: 1,
+                         settings: { m_FilterMode: 1, m_WrapU: 1, m_WrapV: 1 } };
+    p.groups[lang][`ui/fonts/${page}.png`] = png(16, 12);
+    const outline = f.materials["Test - Outline"];
+    Object.assign(outline, { textures: tex(`font_Test ${lang}_0`, 16, 12),
+                             floats: { _GradientScale: 5, _FaceDilate: 0, _OutlineWidth: 0.2, _OutlineSoftness: 0, _WeightNormal: 0,
+                                       _WeightBold: 0.5, _UnderlayOffsetX: 0.5, _UnderlayOffsetY: -0.5, _UnderlayDilate: 0,
+                                       _UnderlaySoftness: 0, _ScaleRatioA: 0.8, _ScaleRatioC: 0.7, _TextureWidth: 16, _TextureHeight: 12 } });
+    f.materials["Fb SDF Material"] = { material: "Fb SDF Material", shader: { shader: TMP }, keywords: [], textures: tex(page, 16, 12),
+                                       floats: { _GradientScale: 16, _WeightNormal: 0, _WeightBold: 0.75, _TextureWidth: 16, _TextureHeight: 12 },
+                                       colors: {} };
+    // GetFallbackMaterial: weight 0.75 / 4, t = max(1, 0.1875 + 0.2) = 1 -> A = 15 / 16; C = (15 - 0.1875 * 15) / 16
+    f.materials["Test - Outline + Fb SDF"] = { ...structuredClone(outline), material: "Test - Outline + Fb SDF", textures: tex(page, 16, 12),
+                                               floats: { ...outline.floats, _GradientScale: 16, _WeightBold: 0.75, _ScaleRatioA: 0.9375,
+                                                         _ScaleRatioC: 0.76171875 } };
+    f.materialKeywords["Fb SDF Material"] = [];
+    f.materialKeywords["Test - Outline + Fb SDF"] = ["OUTLINE_ON"];
+  }
+};
+
 // the emoji sprite asset: two sprites (one without an image), its page and sprite material, the talk text driven by
 // a UIText; the sprite shader in ui/shaders
 const SPRITE = "TextMeshPro/Sprite";
@@ -431,4 +462,21 @@ test("sprite assets: the emoji sprite asset, its material, glyphs and pages, the
   const bare = (f) => { delete f.spriteAssets; delete f.emojiSpriteAsset; delete f.coverage.sprites; };
   failsWith(edit((f) => { bare(f); }), `${E}: W/Talk: a sprite asset without spriteAssets`);
   failsWith(edit((f) => { bare(f); delete f.texts["W/Talk"].spriteAsset; f.emojiSpriteAsset = "Emoji"; }), `${E}: emojiSpriteAsset without spriteAssets`);
+});
+
+test("fallback font assets: the fallback material of each text material (GetFallbackMaterial)", () => {
+  const r = validate(withFallback);
+  assert.equal(r.status, 0, r.lines.join(" | "));
+  assert.deepEqual(schema("story-fonts")(buildSiteFonts(withFallback)), []);
+  const edit = (fn) => (p) => { withFallback(p); fn(p.groups.ja["ui/fonts.json"]); };
+  const M = "Test - Outline + Fb SDF", E = "[ja] ui/fonts.json";
+  failsWith(edit((f) => { delete f.materials[M]; delete f.materialKeywords[M]; }),
+    `${E}: material ${M} (fallback Fb SDF of Test SDF) not in materials`);
+  failsWith(edit((f) => { f.materials[M].floats._GradientScale = 5; }), `${E}: material ${M}: _GradientScale, _ScaleRatioA, _ScaleRatioC not as GetFallbackMaterial(Test - Outline, Fb SDF Material)`);
+  failsWith(edit((f) => { f.materials[M].floats._ScaleRatioA = 0.8; }), `material ${M}: _ScaleRatioA not as`);
+  failsWith(edit((f) => { f.materials[M].floats._OutlineWidth = 0.3; f.materials[M].floats._ScaleRatioA = Math.fround(15 / 16); }),
+    `material ${M}: _OutlineWidth not as`);
+  failsWith(edit((f) => { f.materials[M].textures._MainTex.texture.name = "font_Test ja_0"; }), `material ${M}: _MainTex not as`);
+  failsWith(edit((f) => { f.materials[M].keywords = []; }), `material ${M}: shader / keywords not as`);
+  failsWith(edit((f) => { f.fonts["Test SDF"].fallbacks.push("Test SDF"); }), `${E} fonts.Test SDF: fallbacks list the asset itself or an asset twice`);
 });
