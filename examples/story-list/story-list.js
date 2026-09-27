@@ -14,6 +14,8 @@ const KINDS = { chapter: "Main and event stories", friendship: "Friendship stori
 const LANGUAGE_NAMES = { ja: "日本語", en: "English", "zh-Hant": "繁體中文", "zh-Hans": "简体中文", ko: "한국어" };
 const q = new URLSearchParams(location.search);
 const site = new URL(q.get("site") || "../", location.href);
+// the query entries every page of the site keeps: the site root and the Live2D script URLs
+const kept = () => ({ site: q.get("site"), core: q.get("core"), motionsync: q.get("motionsync") });
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 
 const el = (tag, props = {}, ...children) => {
@@ -53,7 +55,7 @@ const play = async (advId) => {
   const manifest = index ? manifestFor(index, advId, region) : `stories/${advId}.json`;
   document.body.className = "play";
   const msg = el("span", { className: "msg" }), title = el("h1", { textContent: `#${advId}` }), pick = el("select");
-  const back = el("a", { href: queryString({ site: q.get("site"), region: q.get("region"), lang: q.get("lang"), kind: q.get("kind") }) || location.pathname,
+  const back = el("a", { href: queryString({ ...kept(), region: q.get("region"), lang: q.get("lang"), kind: q.get("kind") }) || location.pathname,
                          textContent: "Stories" });
   const story = el("ournotes-story");
   document.body.append(el("header", {}, back, title, el("label", {}, "Language ", pick), msg), el("main", {}, story));
@@ -96,7 +98,7 @@ const list = async () => {
     const all = storiesFor(index, region);
     const kinds = Object.keys(KINDS).filter((k) => all.some((s) => storyKind(s) === k));
     const kind = kinds.includes(wantKind) ? wantKind : null;
-    const keep = { site: q.get("site"), region: wantRegion && region, lang: wantLang && lang, kind };
+    const keep = { ...kept(), region: wantRegion && region, lang: wantLang && lang, kind };
     history.replaceState(null, "", queryString(keep) || location.pathname);
     view.replaceChildren();
     const regions = Array.isArray(index.regions) ? index.regions : [];
