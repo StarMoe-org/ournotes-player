@@ -29,7 +29,11 @@ const fakeDocument = () => {
 // a player with the members the bar reads; seekToLine resolves when the test says so
 const fakePlayer = ({ lineCount = 10, line = -1 } = {}) => {
   const doc = fakeDocument(), root = doc.createElement("div");
-  const session = (l = line) => ({ core: { isPause: false }, line: l });
+  // StorySession.setDialogOpen: the playback waits (and a playing video pauses) while the confirmation is open
+  const session = (l = line) => ({ core: { isPause: false }, line: l, dialogs: [],
+                                   setDialogOpen(open, resume = true) {
+                                     this.core.isPause = open; this.dialogs.push(open ? open : resume ? "cancel" : "skip");
+                                   } });
   const p = {
     root, shadow: doc.createElement("#shadow-root"), canvas: doc.createElement("canvas"),
     paused: false, auto: false, speed: 10, ended: false, video: null, seeks: [], videoSeeks: [], lineCount,
@@ -66,7 +70,9 @@ test("the line bar: the line of the player, its count, the label; off without a 
   c.btnSkip.fire("click");
   assert.deepEqual([c.seek.disabled, p.session.core.isPause], [true, true]);
   c.btnSkipNo.fire("click");
-  assert.deepEqual([c.seek.disabled, p.session.core.isPause], [false, false]);
+  assert.deepEqual([c.seek.disabled, p.session.core.isPause, p.session.dialogs], [false, false, [true, "cancel"]]);
+  c.btnSkip.fire("click"); c.btnSkipYes.fire("click");                  // confirmed: the paused video is not resumed
+  assert.deepEqual(p.session.dialogs.slice(2), [true, "skip"]);
   p.session = null; c.update();
   assert.deepEqual([c.seek.disabled, c.pos.textContent], [true, ""]);   // loading
   const one = fakePlayer({ lineCount: 1 });

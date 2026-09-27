@@ -16,6 +16,12 @@ import { loopWaitUntil } from "./timing.js";
 // Start, and its time advances by the loop's delta x its speed in the update phase; the displayed frame is
 // floor(time x frame rate). The end (PlayEnd) is reached at frames / frame rate. A browser page shows the WebM of the
 // story data through an HTMLVideoElement kept on that clock.
+// The sound of a video (VideoManager.Prepare with advancedAudioMode: CriMana plays the USM's audio track through an
+// AtomEx player of its own) is on no sound category: its volume is the movie sound volume (CriMana.Player.SetVolume at
+// prepare, AdvEpisodeResourceLoader._getMovieSoundVolumeFunc -> AdvPlaybackSession.GetMovieSoundVolume); the Bgm, Se
+// and Voice volumes and the voices do not change it. It pauses and stops with the video (CriMana.Player.Pause / Stop).
+// In a page it goes through the session's Web Audio graph on the movie bus (engine/audio.js connectMedia); a session
+// without Web Audio plays the videos muted.
 
 export const CRI_STATUS = Object.freeze({ Stop: 0, Dechead: 1, WaitPrep: 2, Prep: 3, Ready: 4, Playing: 5, PlayEnd: 6,
                                           Error: 7, StopProcessing: 8 });
@@ -132,11 +138,18 @@ export class VideoInfo {
 const headlessSource = () => ({ setSpeed() {}, sync() {}, seek(t, done) { done(); }, release() {}, glTex: null });
 
 // A browser video source: the WebM through an HTMLVideoElement, kept within a tenth of a second of the video's clock,
-// uploaded into a texture when it shows a new frame
-const browserSource = (ctx, file) => {
+// uploaded into a texture when it shows a new frame; its sound on the movie bus of the session's sound manager. The
+// element runs while the video plays and neither the video (VideoInfo.Pause) nor the host (held()) pauses it.
+// ENGINE: a page without a user gesture yet may refuse to play a video with sound; such a video plays muted.
+export const browserSource = (ctx, file, held = () => false) => {
   const gl = ctx.gl, el = document.createElement("video");
-  el.muted = !ctx.sound; el.playsInline = true; el.preload = "auto";
+  el.playsInline = true; el.preload = "auto";
   el.src = URL.createObjectURL(new Blob([ctx.assets.bytes(file)], { type: "video/webm" }));
+  const media = ctx.audio && typeof ctx.audio.connectMedia === "function" ? ctx.audio.connectMedia(el) : null;
+  el.muted = !media;
+  const play = () => el.play().catch((e) => {
+    if (e && e.name === "NotAllowedError" && !el.muted) { el.muted = true; el.play().catch(() => {}); }
+  });
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
@@ -150,9 +163,9 @@ const browserSource = (ctx, file) => {
     setSpeed(s) { el.playbackRate = s; },
     seek(t, done) { seeked = done; el.currentTime = t; },
     sync(v) {
-      const run = v.status === CRI_STATUS.Playing && !v.paused;
+      const run = v.status === CRI_STATUS.Playing && !v.paused && !held();
       if (Math.abs(el.currentTime - v.time) > 0.1) el.currentTime = v.time;
-      if (run && el.paused) el.play().catch(() => {});
+      if (run && el.paused) play();
       else if (!run && !el.paused) el.pause();
     },
     glTex() {
@@ -165,7 +178,10 @@ const browserSource = (ctx, file) => {
       }
       return { glTexture: tex, width: w, height: h };
     },
-    release() { el.pause(); URL.revokeObjectURL(el.src); el.removeAttribute("src"); el.load(); gl.deleteTexture(tex); },
+    release() {
+      el.pause(); if (media) media.disconnect();
+      URL.revokeObjectURL(el.src); el.removeAttribute("src"); el.load(); gl.deleteTexture(tex);
+    },
   };
 };
 
@@ -215,6 +231,7 @@ export class StoryVideo {
     this.respeedSessionActive = false;        // _isVideoSeekRespeedSessionActive
     this.respeedRerunRequested = false;       // _isVideoSeekRespeedRerunRequested
     this.respeedPendingOnResume = false;      // IsVideoRespeedPendingOnResume (read on a resume this player has not)
+    this.held = false;                        // the host's pause (StoryPlayer.pause): the videos hold with the frames
     this._hook = (l) => this._update(l.deltaTime);
     ctx.loop.on("update", this._hook);
     // Preload: prepare up to two, then the first becomes the current video
@@ -239,7 +256,7 @@ export class StoryVideo {
     let v = null;
     if (rec.master && (rec.master._assetName ?? "").trim()) {
       const ctx = this.ctx;
-      const src = ctx.gl && typeof document !== "undefined" ? browserSource(ctx, rec.file) : headlessSource();
+      const src = ctx.gl && typeof document !== "undefined" ? browserSource(ctx, rec.file, () => this.held) : headlessSource();
       v = new VideoInfo(this.nextUid++, id, rec, src);
       this.loaded.push(v);
     }
@@ -305,7 +322,21 @@ export class StoryVideo {
   consumeSeekRespeedRerunRequest() { const r = this.respeedRerunRequested; this.respeedRerunRequested = false; return r; }
   addSeekRespeedAdvancedFrames(n) { if (n > 0) this.seekRespeedAdvancedFrames += n; }
 
-  // AdvPlayer.Stop: every loaded video stopped
+  // the host's pause: no frame of game time runs, and the loaded videos hold with them (as the whole app does on an
+  // application pause); their state is kept
+  setHeld(on) {
+    this.held = !!on;
+    for (const v of this.loaded) if (v.source) v.source.sync(v);
+  }
+
+  // AdvPlayer.Stop (<Stop>d__141): AdvFlowParameters.Stop (the flow flags cleared), then VideoManager.Stop for every
+  // video the loader prepared
+  stopAll() {
+    Object.assign(this.flow, { clipVideoPlaying: false, clipVideoSkip: false, clipControlAvailable: false, movieVideoPlaying: false });
+    for (const v of this.loaded) v.stop();
+  }
+
+  // the session's end: every loaded video released
   dispose() {
     const hs = this.ctx.loop.hooks.update, i = hs.indexOf(this._hook);
     if (i >= 0) hs.splice(i, 1);
@@ -532,6 +563,22 @@ export const seekStoryVideo = (ctx, sec) => {
   const pos = storyVideoPosition(ctx);
   if (!pos || !pos.seekable) return Promise.resolve(false);
   return storyVideo(ctx).current.seekTo(sec).then(() => true);
+};
+
+// AdvPlayerUIEventHandler.TryPauseCurrentVideo (the skip button, before its confirmation opens): the current video
+// pauses when it plays (and the pause-video button is not held down; that button is not drawn here) -> whether it did
+export const tryPauseCurrentVideo = (ctx) => {
+  const v = storyVideo(ctx), cur = v && v.current;
+  if (!cur || !cur.isPlaying()) return false;
+  cur.pause(true);
+  return true;
+};
+
+// AdvPlayerUIEventHandler.ResumeCurrentVideoIfNeeded(ref pausedByUi) (the confirmation closes): the video the
+// confirmation paused resumes
+export const resumeCurrentVideoIfNeeded = (ctx, pausedByUi) => {
+  const v = pausedByUi && storyVideo(ctx), cur = v && v.current;
+  if (cur && cur.isPaused()) cur.pause(false);
 };
 
 // Session.VideoTimeline.IsActive, for the Delay command

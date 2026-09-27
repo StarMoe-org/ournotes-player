@@ -438,7 +438,10 @@ export class SimpleStorySession {
   setAuto() {}                              // the request fixes the advance mode; the talks have no auto button
   setSpeed() {}                             // no fast-forward in the simple player
   skip() { this.player.stop(); }
-  setVolume(category, v) { if (this.audio.setOptionVolume) this.audio.setOptionVolume(category, v); }
+  setVolume(category, v) {
+    if (category === "Movie") return;                                   // the simple player runs no Movie or Clip row
+    if (this.audio.setOptionVolume) this.audio.setOptionVolume(category, v);
+  }
 
   async step({ draw = true } = {}) {
     if (this.disposed) throw new Error("SimpleStorySession: disposed");

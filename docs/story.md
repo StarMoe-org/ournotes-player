@@ -61,6 +61,7 @@ global `OurnotesStory`), each with a `.min.js` and source maps. Types: `types/st
 | `controls` | The control bar (boolean; `off` hides it). Default shown. |
 | `line` | Start at this line (0-based), read when the story loads. |
 | `volume-bgm`, `volume-se`, `volume-voice` | Volumes 0–1 of music, sound effects and voices (the app's sound options). |
+| `volume-movie` | Volume 0–1 of the videos' own sound (the game's movie sound volume, 1 by default; none of the app's options changes it). |
 | `no-voice` | Play without voices (boolean), read when the story loads. |
 
 Properties `src`, `lang`, `auto`, `speed` reflect the attributes; `line`, `lineCount`, `speaker`, `text`, `ended`,
@@ -81,16 +82,16 @@ player.addEventListener("line", (e) => console.log(e.detail.speaker, e.detail.te
 ```
 
 `StoryPlayer.create(host, options)` (or `new StoryPlayer(host, options)` and `load()`) appends a `<div>` to `host` (an
-element or a shadow root) with the canvas and the control bar in its shadow root, loads the story and resolves once
-it is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed` (10, 15, 17, 20), `quality`,
+element or a shadow root) with the canvas and the control bar in its shadow root, loads the story and resolves once it
+is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `speed` (10, 15, 17, 20), `quality`,
 `filmGrain` (as the attribute), `line`, `autoplay`, `controls`, `uiLang` (the control labels' language), `voice`,
-`sound` (`false`: no Web Audio, the story keeps its timing silently), `volumes` (`{Bgm, Se, Voice}`), `seed`, `fetch`,
-`signal`, `pixelRatio`, `on` (`{type: listener}`).
+`sound` (`false`: no Web Audio, the story keeps its timing silently), `volumes` (`{Bgm, Se, Voice, Movie}`), `seed`,
+`fetch`, `signal`, `pixelRatio`, `on` (`{type: listener}`).
 
 | Member | Meaning |
 |---|---|
 | `play()` | Starts the episode (the first call) or resumes it. Call it from a user gesture. |
-| `pause()` | Stops the frames and the sound (the player's own pause; the game has none). |
+| `pause()` | Stops the frames, the sound and the videos (the player's own pause; the game has none). |
 | `next()` | A tap on the story screen (`AdvPlayerUIEventHandler.OnNextButtonTapped`): advances a line waiting for the player, reveals a line being typed, cuts an auto-mode wait. Clicks on the story screen do the same. |
 | `setAuto(on)` | The story menu's auto button: on or off; turning auto off at a speed other than ×1 resets the speed to ×1. |
 | `setSpeed(s)` | The story menu's fast-forward button set to `s` (10, 15, 17, 20): a speed other than ×1 turns auto on, ×1 brings back the player's own auto choice. |
@@ -98,7 +99,7 @@ it is ready. Options: `src` (or `assets`: an `AssetStore`), `lang`, `auto`, `spe
 | `seekToLine(i)` | Restarts at line `i` with the game's shortcut (below). |
 | `seekVideo(sec)` | Moves the playing movie to `sec` seconds of it (the player's own seek, as its pause; the game has none). Resolves to `false` when no video can be seeked now. |
 | `setLanguage(lang)` | Loads another language of the story and restarts at the current line. |
-| `setVolume(category, v)` | `"Bgm"`, `"Se"` or `"Voice"`, 0–1. |
+| `setVolume(category, v)` | `"Bgm"`, `"Se"` or `"Voice"` (the app's sound options), or `"Movie"` (the videos' own sound), 0–1. |
 | `line`, `lineCount`, `speaker`, `text` | The current line (-1 before the first), the number of lines, the current speaker and text (TMP rich text as in the story data, tags included). |
 | `auto`, `speed`, `paused`, `ended`, `lang`, `languages`, `info` | State; `info` is the story manifest without its file lists. |
 | `video` | While a Movie or Clip row plays a video, `{kind, time, duration, seekable}` (`"movie"` or `"clip"`, seconds of the video), else `null`. Only a playing movie is `seekable`: the rows after a Movie row wait for its end alone, while the rows under a clip follow its frames (Delay rows on the video timeline, which does not go back). |
@@ -113,13 +114,14 @@ subtitles and chat rows, also those before the start line; `speaker` is `null` f
 ### Control bar
 
 The story menu's items with the game's behaviour and visible labels in the story's language (or `uiLang`): Next, Auto,
-Fast-forward (×1 → ×1.5 → ×1.7 → ×2 → ×1), Skip (with a confirmation; the playback waits while it is open), and the
-music, sound effect and voice volumes. Apart from them, the player's own items: play / pause and the position. The
-position is the line with its bar: moving the bar restarts at that line (`seekToLine`), playing or not as before. While
-a Movie or Clip row plays a video, a second bar shows the video's time; on a movie it seeks (`seekVideo`), on a clip it
-only shows. The bars are range inputs (arrow keys, Home / End) and rest while the skip confirmation is open.
-Keyboard, while the player has the focus: Space or Enter next, A auto, F fast-forward, K play / pause. An Overlay
-episode (the simple story player has no auto button and no fast-forward) shows neither Auto nor Fast-forward.
+Fast-forward (×1 → ×1.5 → ×1.7 → ×2 → ×1), Skip (with a confirmation; the playback and a playing video wait while it is
+open), and the music, sound effect and voice volumes (a video's own sound follows none of them, as in the game;
+`volume-movie` sets it). Apart from them, the player's own items: play / pause and the position. The position is the
+line with its bar: moving the bar restarts at that line (`seekToLine`), playing or not as before. While a Movie or Clip
+row plays a video, a second bar shows the video's time; on a movie it seeks (`seekVideo`), on a clip it only shows. The
+bars are range inputs (arrow keys, Home / End) and rest while the skip confirmation is open. Keyboard, while the player
+has the focus: Space or Enter next, A auto, F fast-forward, K play / pause. An Overlay episode (the simple story player
+has no auto button and no fast-forward) shows neither Auto nor Fast-forward.
 
 ## `StorySession`
 
@@ -141,9 +143,11 @@ multiplier, 1 the game's; default 0, none), `seed`, `auto`, `speed`, `line`, `vo
 story UI and the sound manager (tests).
 
 Methods: `play()`, `tap()`, `setAuto(on)`, `setSpeed(s)`, `skip()`, `setVolume(category, v)`, `seekVideo(sec)`,
-`step({draw})`, `resize(w, h)`, `render()`, `dispose()`; state: `time`, `frame`, `line`, `lineCount`, `speaker`, `text`,
-`isAuto`, `speed`, `started`, `ended`, `endReason`, `video`. `StorySession.requirements(store)` lists the commands the
-episode executes and those this player does not support.
+`setPaused(on)` (the host's pause: the videos hold; no step runs meanwhile), `setDialogOpen(open, resume)` (the skip
+confirmation: the playback waits and a playing video pauses; closed with `resume` false after a confirmed skip, the
+video stays paused until the stop), `step({draw})`, `resize(w, h)`, `render()`, `dispose()`; state: `time`, `frame`,
+`line`, `lineCount`, `speaker`, `text`, `isAuto`, `speed`, `started`, `ended`, `endReason`, `video`.
+`StorySession.requirements(store)` lists the commands the episode executes and those this player does not support.
 
 ## Seek
 
@@ -201,7 +205,9 @@ the ADV warm-up volume) is drawn when the host asks for it (`film-grain`); it ti
 the game renders at: the canvas width capped at the quality's resolution (1920 pixels at Best and High, 1440 at
 Middle), so a canvas wider than that gets a proportionally larger grain. The talk windows the TalkWindow rows switch
 between: the default window and the centered one (`UICenterTalkWindow`) with the dimmed backdrop and the UI blur of
-the screen behind its text.
+the screen behind its text. The videos of Movie and Clip rows with their own sound, which the game plays outside the
+sound categories at its movie sound volume (the music, sound effect and voice volumes do not change it, and the
+voices do not duck it); a video pauses while the skip confirmation is open and stops when the playback stops.
 Overlay episodes (`playbackMode` 1: the home spot talks and the live result talks) play through the game's simple
 story player in their host screen ([story-simple.md](story-simple.md)).
 

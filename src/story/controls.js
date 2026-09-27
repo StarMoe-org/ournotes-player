@@ -2,16 +2,16 @@ import { storyStrings } from "./strings.js";
 import { SimpleStorySession } from "./simple/session.js";
 
 // Control bar of a StoryPlayer, with visible labels in the page's language. The story menu's items with the game's
-// semantics (AdvPlayerUIEventHandler): Auto, Fast-forward (×1 -> ×1.5 -> ×1.7 -> ×2 -> ×1; a speed other than ×1
-// turns auto on, turning auto off resets it to ×1), Skip (with its confirmation; the playback waits while it is open) and the
-// next button (a tap on the story screen, as a click on the story itself); the app's music, sound effect and voice
-// volumes. Apart from them, the player's own items: play / pause, and the position: the line with its bar (a seek
-// restarts at that line, StoryPlayer.seekToLine) and, while a Movie or Clip row plays a video, the video's time with
-// a bar of its own (a movie can be seeked; a clip's bar only shows, as the rows under a clip follow its frames). The
-// bars are range inputs (arrow keys, Home / End); they rest while the skip confirmation is open. Keyboard (while the
-// player has the focus): Space / Enter next, A auto, F fast-forward, K play / pause. Every element lives in the
-// player's shadow root. An Overlay episode (the simple player: no auto button, no fast-forward) shows neither Auto nor
-// Fast-forward.
+// semantics (AdvPlayerUIEventHandler): Auto, Fast-forward (×1 -> ×1.5 -> ×1.7 -> ×2 -> ×1; a speed other than ×1 turns
+// auto on, turning auto off resets it to ×1), Skip (with its confirmation; the playback and a playing video wait while
+// it is open) and the next button (a tap on the story screen, as a click on the story itself); the app's music, sound
+// effect and voice volumes (a video's own sound has no volume option in the game). Apart from them, the player's own
+// items: play / pause, and the position: the line with its bar (a seek restarts at that line, StoryPlayer.seekToLine)
+// and, while a Movie or Clip row plays a video, the video's time with a bar of its own (a movie can be seeked; a clip's
+// bar only shows, as the rows under a clip follow its frames). The bars are range inputs (arrow keys, Home / End); they
+// rest while the skip confirmation is open. Keyboard (while the player has the focus): Space / Enter next, A auto, F
+// fast-forward, K play / pause. Every element lives in the player's shadow root. An Overlay episode (the simple player:
+// no auto button, no fast-forward) shows neither Auto nor Fast-forward.
 
 export const STORY_PLAYER_CSS = `
 :host { all: initial; visibility: inherit; }   /* hidden with its host element */
@@ -106,9 +106,10 @@ export class StoryControls {
     on(this.btnNext, "click", () => { focus(); player.next(); });
     on(this.btnAuto, "click", () => { focus(); player.setAuto(!player.auto); });
     on(this.btnSpeed, "click", () => { focus(); player.setSpeed(NEXT_SPEED[player.speed]); });
-    // OnSkipButtonTapped: the confirmation dialog pauses the playback (AdvPlayer.OnOpenDialog -> Model.SetPause)
+    // OnSkipButtonTapped: the confirmation dialog pauses the playback (AdvPlayer.OnOpenDialog -> Model.SetPause) and
+    // a playing video (TryPauseCurrentVideo)
     on(this.btnSkip, "click", () => { focus(); this._confirm(true); });
-    on(this.btnSkipYes, "click", () => { focus(); this._confirm(false); player.skip(); });
+    on(this.btnSkipYes, "click", () => { focus(); this._confirm(false, false); player.skip(); });
     on(this.btnSkipNo, "click", () => { focus(); this._confirm(false); });
     for (const [cat, r] of Object.entries(this.vols)) on(r, "input", () => player.setVolume(cat, Number(r.value)));
     // a bar's value applies on change (the pointer released, a key) and shows while it is dragged
@@ -136,17 +137,19 @@ export class StoryControls {
     this.update();
   }
 
-  _confirm(open) {
+  // resume false: the skip was confirmed, the video paused for the confirmation stays so until the stop
+  _confirm(open, resume = true) {
     this.confirm.hidden = !open;
     this.btnSkip.hidden = open;
-    this._pauseForConfirm();
+    this._pauseForConfirm(resume);
     this.update();
   }
 
-  // the open confirmation holds the playback, also that of a session a seek started meanwhile
-  _pauseForConfirm() {
+  // the open confirmation holds the playback and pauses a playing video (StorySession.setDialogOpen), also in a
+  // session a seek started meanwhile
+  _pauseForConfirm(resume = true) {
     const s = this.player.session;
-    if (s && s.core) s.core.isPause = !this.confirm.hidden;
+    if (s && typeof s.setDialogOpen === "function") s.setDialogOpen(!this.confirm.hidden, resume);
   }
 
   _barHeight() { this.player.root.style.setProperty("--bar-h", `${this.bar.offsetHeight || 44}px`); }

@@ -317,10 +317,11 @@ test("playback: PlayCommands follows the list index; a row that moved it is not 
 // the fields of the story video the core and the Delay command read (features/video.js StoryVideo)
 const fakeVideo = (states = []) => {
   const v = { flow: { clipVideoSkip: false, clipVideoPlaying: false, clipControlAvailable: false, movieVideoPlaying: false },
-              advanced: [], snapped: [],
+              advanced: [], snapped: [], stops: 0,
               timeline: { isActive: true, remainingSeconds: 0.5, advanceTarget: (d) => v.advanced.push(d),
                           end() { this.isActive = false; } },
-              updateTimeline: () => (states.length ? states.shift() : 0), snapTimeline: (paused) => v.snapped.push(paused) };
+              updateTimeline: () => (states.length ? states.shift() : 0), snapTimeline: (paused) => v.snapped.push(paused),
+              stopAll: () => { v.stops++; } };
   return v;
 };
 
@@ -333,6 +334,7 @@ test("Delay with a video timeline: the target moves by the raw Duration; a lost 
   assert.equal(v.timeline.isActive, false);
   // four waiting frames, then CalcDuration(0.5) = 0.25 s at x2 on the clock
   assert.ok(f(1) - f(0) >= 11 && f(1) - f(0) <= 13, `delay took ${f(1) - f(0)} frames`);
+  assert.equal(v.stops, 1);                                              // AdvPlayer.Stop at the end stops the videos
 });
 
 test("DelayWithPauseSpeedAdjustment ends when a Clip video is skipped", async () => {

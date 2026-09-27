@@ -1,7 +1,8 @@
 // Movie / Clip / Subtitles on a real PlayerLoop at 30 fps with synthetic video records and a stand-in UI: the video
 // queue, the view's fades, the clip's frame clock and the timeline Delay rows follow, the clip's end, the stop marker,
-// the Movie's blocking, captions over a clip, and the seek re-speed of an audio video on a speed change (the delay
-// helpers around it, the screen's freeze overlay). Synthetic inputs only.
+// the Movie's blocking, captions over a clip, the seek re-speed of an audio video on a speed change (the delay
+// helpers around it, the screen's freeze overlay), the host's seek, and a video's sound and pauses (the page's video
+// element on a stand-in document). Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PlayerLoop } from "../../src/engine/loop.js";
@@ -10,7 +11,10 @@ import { commandHandler, createStoryUILayers } from "../../src/story/interfaces.
 import { delayWithPauseSpeedAdjustment } from "../../src/story/commands/misc.js";
 import { disposeStoryFeatures, installStoryFeatures, setStoryFeaturesSpeed } from "../../src/story/features/index.js";
 import { calcVideoRealDuration, delayWithSpeedAdjustment } from "../../src/story/features/timing.js";
-import { VideoInfo, delayUntilVideoTimeline, seekStoryVideo, storyVideo, storyVideoPosition } from "../../src/story/features/video.js";
+import { VideoInfo, browserSource, delayUntilVideoTimeline, seekStoryVideo, storyVideo, storyVideoPosition,
+         tryPauseCurrentVideo } from "../../src/story/features/video.js";
+import { StoryPlayerCore } from "../../src/story/player-core.js";
+import { StorySession } from "../../src/story/session.js";
 import { headlessGL } from "../../scripts/lib/headless.mjs";
 
 const flush = () => new Promise((res) => setImmediate(res));
@@ -254,6 +258,107 @@ test("host seek: the video's clock holds until its source shows the position, at
   v.release();
   await flush();
   assert.equal(ended, 4);
+});
+
+// ------------------------------------------------------------------------------------------------ sound and pauses
+// a page's <video> elements and WebGL context as far as the browser source uses them
+const fakePage = () => {
+  const els = [];
+  const gl = new Proxy({}, { get: (o, k) => (typeof k === "string" && /^[A-Z_0-9]+$/.test(k) ? 0 : () => ({})) });
+  const document = { createElement: () => {
+    const el = { muted: false, paused: true, currentTime: 0, readyState: 0, playbackRate: 1, plays: 0, refuse: null,
+                 addEventListener() {}, removeAttribute() {}, load() {}, pause() { el.paused = true; },
+                 play() {
+                   el.plays++;
+                   if (el.refuse && !el.muted) return Promise.reject(el.refuse);
+                   el.paused = false;
+                   return Promise.resolve();
+                 } };
+    els.push(el);
+    return el;
+  } };
+  return { els, gl, document };
+};
+const withPage = async (fn) => {
+  const page = fakePage(), saved = globalThis.document;
+  globalThis.document = page.document;
+  try { await fn(page); } finally { if (saved === undefined) delete globalThis.document; else globalThis.document = saved; }
+};
+
+test("a video's sound: on the movie bus of the sound manager, else muted; a refused play goes on muted", () => withPage(async (page) => {
+  const routed = [];
+  const audio = { connectMedia: (el) => { const n = { el, on: true, disconnect() { n.on = false; } }; routed.push(n); return n; } };
+  const ctx = { gl: page.gl, assets: { bytes: () => new Uint8Array(8) }, audio };
+  const src = browserSource(ctx, "videos/a.webm"), el = page.els[0];
+  assert.deepEqual([routed.length, routed[0].el === el, el.muted], [1, true, false]);
+  const v = new VideoInfo(1, 11, video(11, 60, true), src);
+  v.play();
+  assert.equal(el.paused, false);
+  v.pause(true);                                                          // VideoInfo.Pause: picture and sound
+  assert.equal(el.paused, true);
+  v.pause(false);
+  assert.equal(el.paused, false);
+  v.release();
+  assert.deepEqual([routed[0].on, el.paused], [false, true]);
+  // a sound manager without Web Audio (a silent session): the video plays muted
+  browserSource({ ...ctx, audio: {} }, "videos/b.webm");
+  assert.equal(page.els[1].muted, true);
+  // a page that does not let a video with sound start yet: it plays muted
+  const src3 = browserSource(ctx, "videos/c.webm"), el3 = page.els[2];
+  el3.refuse = Object.assign(new Error("no user gesture"), { name: "NotAllowedError" });
+  new VideoInfo(2, 11, video(11, 60, true), src3).play();
+  await flush();
+  assert.deepEqual([el3.muted, el3.paused, el3.plays], [true, false, 2]);
+}));
+
+test("the host's pause holds the loaded videos' elements and keeps the videos' own state", () => withPage(async (page) => {
+  const t = makePlayer([{ cmd: "Movie", VideoID: 11 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const sv = storyVideo(t.ctx), cur = sv.current;
+  cur.source = browserSource({ gl: page.gl, assets: { bytes: () => new Uint8Array(8) }, audio: {} }, "videos/v11.webm",
+                             () => sv.held);
+  const el = page.els[0];
+  const run = cmd(t, { cmd: "Movie", VideoID: 11, i: 0 });
+  await steps(t.loop, 3);
+  assert.equal(el.paused, false);
+  StorySession.prototype.setPaused.call({ ctx: t.ctx }, true);           // StoryPlayer.pause: no frame runs meanwhile
+  assert.deepEqual([sv.held, el.paused, cur.isPlaying(), cur.isPaused()], [true, true, true, false]);
+  StorySession.prototype.setPaused.call({ ctx: t.ctx }, false);
+  assert.equal(el.paused, false);
+  await settle(t.loop, run);
+  assert.equal(el.paused, true);                                          // ended, released by the next video's prepare
+  disposeStoryFeatures(t.ctx);
+}));
+
+test("the skip confirmation pauses a playing video and resumes it; the playback's stop stops every loaded video", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 11 }, { cmd: "Movie", VideoID: 12 }], { auto: false });
+  await installStoryFeatures(t.ctx, t.p);
+  const session = { core: { isPause: false }, ctx: t.ctx, _dialogVideo: false };
+  const dialog = (open) => StorySession.prototype.setDialogOpen.call(session, open);
+  assert.equal(tryPauseCurrentVideo(t.ctx), false);                       // prepared, not playing
+  dialog(true); dialog(false);
+  assert.equal(storyVideo(t.ctx).current.isPaused(), false);
+  await settle(t.loop, cmd(t, { cmd: "Clip", VideoID: 11, i: 0 }));
+  await steps(t.loop, 3);
+  const sv = storyVideo(t.ctx), clip = sv.current;
+  dialog(true);
+  assert.deepEqual([session.core.isPause, clip.isPaused()], [true, true]);
+  const time = clip.time;
+  await steps(t.loop, 5);
+  assert.equal(clip.time, time);                                          // the paused video's clock holds
+  dialog(false);
+  assert.deepEqual([session.core.isPause, clip.isPaused()], [false, false]);
+  await steps(t.loop, 3);
+  assert.ok(clip.time > time);
+  dialog(true);                                                           // the skip confirmed: the video stays paused
+  StorySession.prototype.setDialogOpen.call(session, false, false);
+  assert.deepEqual([session.core.isPause, clip.isPaused(), session._dialogVideo], [false, true, false]);
+  // AdvPlayer.Stop: the clip and the prepared movie stop
+  t.ctx.audio.stopAll = () => {};
+  StoryPlayerCore.prototype._stop.call({ ctx: t.ctx, session: { sePlayIds: [] } }, 1);
+  assert.deepEqual(sv.loaded.map((v) => v.isStopComplete()), [true, true]);
+  assert.deepEqual([sv.flow.clipVideoPlaying, storyVideoPosition(t.ctx)], [false, null]);   // AdvFlowParameters.Stop
+  disposeStoryFeatures(t.ctx);
 });
 
 // ------------------------------------------------------------------------------------------------ seek re-speed

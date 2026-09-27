@@ -1,5 +1,5 @@
-// engine/audio.js additions over a stand-in AudioContext: the playback speed rule, the option ("<Cat>Config") volumes
-// and a voice played time-stretched; engine/timestretch.js on synthetic PCM.
+// engine/audio.js additions over a stand-in AudioContext: the playback speed rule, the option ("<Cat>Config") volumes,
+// a voice played time-stretched and the movie bus of the videos' sound; engine/timestretch.js on synthetic PCM.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Audio, playbackSpeed } from "../../src/engine/audio.js";
@@ -16,6 +16,12 @@ const fakeContext = () => {
   return {
     sampleRate: 48000, currentTime: 0, state: "running", destination: {},
     createGain() { return { gain: param(1), connect(n) { return n; } }; },
+    createMediaElementSource(el) {
+      const n = { el, to: null, connect(x) { n.to = x; return x; }, disconnect() { n.to = null; } };
+      this.media.push(n);
+      return n;
+    },
+    media: [],
     createBuffer: buffer,
     createBufferSource() {
       const s = { buffer: null, loop: false, playbackRate: param(1), started: null,
@@ -56,6 +62,21 @@ test("option volumes multiply the category bus; All scales by DefaultVolume, a n
   assert.equal(a.getOptionVolume("Bgm"), 1);
   assert.equal(a.buses[0].gain.value, F(F(0.7) * 0.5));
   assert.ok(Number.isNaN(a.getOptionVolume("Nope")));
+});
+
+test("a video's sound: on the movie bus at the movie volume, which no category or option volume changes", () => {
+  const ctx = fakeContext();
+  const a = new Audio(() => null, { time: 0 }, { context: ctx });
+  const el = {}, media = a.connectMedia(el);
+  assert.deepEqual([ctx.media[0].el === el, ctx.media[0].to === a.movieBus, a.movieBus.gain.value], [true, true, 1]);
+  a.setOptionVolume("All", 0); a.changeVolume("All", 0);
+  assert.equal(a.movieBus.gain.value, 1);
+  a.setMovieVolume(0.25);
+  assert.deepEqual([a.movieVolume, a.movieBus.gain.value], [0.25, 0.25]);
+  a.setMovieVolume(3);
+  assert.equal(a.movieBus.gain.value, 1);
+  media.disconnect();
+  assert.equal(ctx.media[0].to, null);
 });
 
 test("a cue at playback speed 2 plays a time-stretched buffer; the synced time runs at the speed", () => {

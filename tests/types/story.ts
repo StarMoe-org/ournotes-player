@@ -23,6 +23,7 @@ export async function useStoryPlayer(host: HTMLElement): Promise<string[]> {
   const speed: AdvPlaybackSpeed = ADV_PLAYBACK_SPEEDS[1] ?? 10;
   player.setSpeed(speed);
   player.setVolume("Voice", 0.8);
+  player.setVolume("Movie", 0.5);
   await player.seekToLine(3);
   const video: StoryVideoPosition | null = player.video;
   if (video && video.kind === "movie" && video.seekable) await player.seekVideo(video.duration / 2);
@@ -44,6 +45,7 @@ export async function useStorySession(gl: WebGL2RenderingContext | null): Promis
   const req = StorySession.requirements(store);
   while (!s.ended && s.frame < 30 * 60 * STORY_FRAME_RATE) { await s.step({ draw: false }); if (s.line === 2) s.tap(); }
   if (s instanceof StorySession) {
+    s.setPaused(true); s.setDialogOpen(false);
     s.core.pressFastForward(15); s.core.pressAuto(false);
     s.core.subtitlesEnabled = false;
     s.core.setCurrentEpisodeListIndex(s.core.currentEpisodeListIndex + 1);

@@ -17,6 +17,7 @@ import { StoryPlayer } from "./player.js";
 //   controls     show the control bar (boolean attribute; "off" hides it); default shown
 //   line         start at this line (0-based), read when the story loads
 //   volume-bgm, volume-se, volume-voice   0..1
+//   volume-movie the videos' own sound, 0..1 (the game's movie sound volume; no option of the app changes it)
 //   no-voice     play without voices (boolean), read when the story loads
 // Methods and properties as StoryPlayer: play(), pause(), next(), skip(), seekToLine(i), seekVideo(sec),
 // setVolume(category, v), line, lineCount, speaker, text, ended, languages, video, plus `player` (the StoryPlayer, null
@@ -40,7 +41,7 @@ export const parseStorySpeed = (s) => {
 };
 
 export class OurnotesStoryElement extends Base {
-  static get observedAttributes() { return ["src", "lang", "auto", "speed", "volume-bgm", "volume-se", "volume-voice"]; }
+  static get observedAttributes() { return ["src", "lang", "auto", "speed", "volume-bgm", "volume-se", "volume-voice", "volume-movie"]; }
 
   constructor() {
     super();
@@ -114,6 +115,7 @@ export class OurnotesStoryElement extends Base {
     else if (name === "volume-bgm") p.setVolume("Bgm", this._volume(name));
     else if (name === "volume-se") p.setVolume("Se", this._volume(name));
     else if (name === "volume-voice") p.setVolume("Voice", this._volume(name));
+    else if (name === "volume-movie") p.setVolume("Movie", this._volume(name));
   }
 
   _reset() {
@@ -135,7 +137,8 @@ export class OurnotesStoryElement extends Base {
       quality: this.getAttribute("quality") || undefined, line: num("line"), autoplay: this.hasAttribute("autoplay"),
       filmGrain: this.getAttribute("film-grain") ?? undefined,
       controls: this._flag("controls", true), voice: !this.hasAttribute("no-voice"),
-      volumes: { Bgm: this._volume("volume-bgm"), Se: this._volume("volume-se"), Voice: this._volume("volume-voice") },
+      volumes: { Bgm: this._volume("volume-bgm"), Se: this._volume("volume-se"), Voice: this._volume("volume-voice"),
+                 Movie: this._volume("volume-movie") },
       seed: num("seed"), signal: abort.signal, on: Object.fromEntries(EVENTS.map((t) => [t, relay])),
     }).then((p) => {
       if (gen !== this._gen) { p.dispose(); return; }

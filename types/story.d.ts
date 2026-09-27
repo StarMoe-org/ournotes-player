@@ -259,6 +259,9 @@ export interface StoryVideoPosition {
   seekable: boolean;
 }
 
+/** The volume categories of a story: the app's sound options and the videos' own sound. */
+export type StoryVolumeCategory = "Bgm" | "Se" | "Voice" | "Movie";
+
 /** One story episode on a WebGL2 context, or headless (gl = null); no DOM access. */
 export class StorySession {
   /** An Overlay episode (playbackMode 1) gets a SimpleStorySession. */
@@ -294,9 +297,15 @@ export class StorySession {
   setAuto(on: boolean): void;
   setSpeed(speed: AdvPlaybackSpeed): void;
   skip(): void;
-  setVolume(category: "Bgm" | "Se" | "Voice", volume: number): void;
+  /** "Bgm", "Se", "Voice": the app's sound options; "Movie": the videos' own sound (the game's movie sound volume). */
+  setVolume(category: StoryVolumeCategory, volume: number): void;
   /** Moves the playing movie to `seconds` of it; false when no video can be seeked now. */
   seekVideo(seconds: number): Promise<boolean>;
+  /** The host's pause (no step runs meanwhile): the videos hold. */
+  setPaused(on: boolean): void;
+  /** The skip confirmation: while open the playback waits and a playing video pauses; closed with resume false (the
+   *  skip was confirmed) the video stays paused. */
+  setDialogOpen(open: boolean, resume?: boolean): void;
   step(options?: { draw?: boolean }): Promise<void>;
   resize(width: number, height: number): void;
   render(): void;
@@ -350,7 +359,7 @@ export class SimpleStorySession {
   setAuto(on: boolean): void;
   setSpeed(speed: AdvPlaybackSpeed): void;
   skip(): void;
-  setVolume(category: "Bgm" | "Se" | "Voice", volume: number): void;
+  setVolume(category: StoryVolumeCategory, volume: number): void;
   step(options?: { draw?: boolean }): Promise<void>;
   resize(width: number, height: number): void;
   render(): void;
@@ -376,7 +385,7 @@ export interface StoryPlayerOptions {
   uiLang?: string;
   voice?: boolean;
   sound?: boolean;
-  volumes?: Partial<Record<"Bgm" | "Se" | "Voice", number>>;
+  volumes?: Partial<Record<StoryVolumeCategory, number>>;
   seed?: number;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
@@ -434,7 +443,7 @@ export class StoryPlayer extends EventTarget {
   seekVideo(seconds: number): Promise<boolean>;
   /** The game's Skip: the playback stops. */
   skip(): void;
-  setVolume(category: "Bgm" | "Se" | "Voice", volume: number): void;
+  setVolume(category: StoryVolumeCategory, volume: number): void;
   dispose(): Promise<void>;
   addEventListener<K extends keyof StoryPlayerEventMap>(type: K, listener: (event: StoryPlayerEventMap[K]) => void,
                                                         options?: boolean | AddEventListenerOptions): void;
@@ -476,7 +485,7 @@ export class OurnotesStoryElement extends HTMLElement {
   skip(): Promise<void>;
   seekToLine(i: number): Promise<void>;
   seekVideo(seconds: number): Promise<boolean>;
-  setVolume(category: "Bgm" | "Se" | "Voice", volume: number): Promise<void>;
+  setVolume(category: StoryVolumeCategory, volume: number): Promise<void>;
   addEventListener<K extends keyof StoryPlayerEventMap>(type: K, listener: (this: OurnotesStoryElement, event: StoryPlayerEventMap[K]) => void,
                                                         options?: boolean | AddEventListenerOptions): void;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;

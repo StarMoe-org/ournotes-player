@@ -435,12 +435,13 @@ export class StoryPlayerCore {
     clearAutoAdvCancellation(this);
   }
 
-  // AdvPlayer.Stop: the sounds the episode started stop (BGM, voices, SE: 0.3 s)
+  // AdvPlayer.Stop: the sounds the episode started stop (BGM, voices, SE: 0.3 s), and the videos the loader prepared
   _stop(reason) {
-    const a = this.ctx.audio, s = this.session;
+    const a = this.ctx.audio, s = this.session, video = storyVideo(this.ctx);
     a.stopAll(SOUND_CATEGORY.Bgm, false, 0.3);
     a.stopAll(SOUND_CATEGORY.Voice, false, 0.3);
     for (const id of s.sePlayIds) a.stop(id, false, 0.3);
+    if (video) video.stopAll();
     this.stopReason = reason;
     return reason;
   }

@@ -30,7 +30,8 @@ export class StoryPlayer extends EventTarget {
   //   line         start at this line (default 0)
   //   autoplay     play as soon as the story is loaded (audio may still wait for a user gesture)
   //   controls     show the control bar (default true); uiLang: the control labels' language (default: lang)
-  //   voice        false: no voices; sound: false: no Web Audio (silent, same timing); volumes {Bgm, Se, Voice} (0..1)
+  //   voice        false: no voices; sound: false: no Web Audio (silent, same timing); volumes {Bgm, Se, Voice, Movie}
+  //                (0..1; Movie: the videos' own sound)
   //   seed         seed of UnityEngine.Random (eye blinks, pseudo lip sync)
   //   fetch, signal, pixelRatio, on {type: listener}
   static async create(host, opts = {}) {
@@ -147,6 +148,8 @@ export class StoryPlayer extends EventTarget {
     if (this.disposed) { await session.dispose(); throw abortError(); }
     this.session = session;
     this._lang = session.lang;
+    this._startLine = Math.max(0, Math.min(line, session.lineCount - 1));
+    if (this._paused && session.setPaused) session.setPaused(true);          // its videos wait for the play
     for (const [cat, v] of Object.entries(this._volumes)) session.setVolume(cat, v);
     session.resize(w, h);
     session.render();
@@ -173,17 +176,22 @@ export class StoryPlayer extends EventTarget {
     if (s.audio && s.audio.resume) s.audio.resume().catch(() => {});
     if (this.controls) this.controls.showStart(false);
     if (!s.started) s.play();
-    if (this._paused) { this._paused = false; if (s.audio && s.audio.resume) s.audio.resume().catch(() => {}); }
+    if (this._paused) {
+      this._paused = false;
+      if (s.audio && s.audio.resume) s.audio.resume().catch(() => {});
+      if (s.setPaused) s.setPaused(false);
+    }
     this._emit("play");
     this._sync();
   }
 
-  // stops the frames (the player's pause; the game has none): game time and sound stop together
+  // stops the frames (the player's pause; the game has none): game time, sound and the videos stop together
   pause() {
     if (this._paused) return;
     this._paused = true;
     const s = this.session;
     if (s && s.audio && s.audio.suspend) s.audio.suspend().catch(() => {});
+    if (s && s.setPaused) s.setPaused(true);
     this._emit("pause");
     this._sync();
   }
@@ -215,7 +223,7 @@ export class StoryPlayer extends EventTarget {
   // the game's Skip: the playback stops, the finalize rows are not played
   skip() { this._need().skip(); }
 
-  // category "Bgm" | "Se" | "Voice", v 0..1
+  // category "Bgm" | "Se" | "Voice" (the app's options) | "Movie" (the videos' own sound), v 0..1
   setVolume(category, v) {
     this._volumes[category] = Math.min(1, Math.max(0, Number(v)));
     if (this.session) this.session.setVolume(category, this._volumes[category]);
@@ -238,12 +246,13 @@ export class StoryPlayer extends EventTarget {
     return true;
   }
 
-  // loads another language of the story and restarts at the current line
+  // loads another language of the story and restarts at the current line (the session's start line while the
+  // shortcut to it has not shown it yet: a seek before the first play)
   async setLanguage(lang) {
     if (lang === this._lang) return;
     if (!this._manifest) throw new Error("StoryPlayer: setLanguage needs a story manifest (src)");
     const store = await this._loadStore(lang, this._abort.signal);
-    const line = Math.max(0, this.line), playing = this.session && this.session.started;
+    const line = Math.max(0, this._startLine || 0, this.line), playing = this.session && this.session.started;
     await this._replace(async () => { this.store = store; this._lang = lang; await this._startSession(line, playing); });
   }
 

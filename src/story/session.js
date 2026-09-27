@@ -20,7 +20,8 @@ import { AdvStageData } from "./stage.js";
 import { disposeStoryFeatures, installStoryFeatures, setStoryFeaturesSpeed } from "./features/index.js";
 import { StoryUI } from "./ui.js";
 import { AnimRecords } from "./features/clips.js";
-import { seekStoryVideo, storyVideoPosition } from "./features/video.js";
+import { resumeCurrentVideoIfNeeded, seekStoryVideo, storyVideo, storyVideoPosition,
+         tryPauseCurrentVideo } from "./features/video.js";
 
 // StorySession: one story episode (ADV) of the game played on a WebGL2 context, or headless with gl = null (Node:
 // tests, read sets). It has no DOM access: the caller calls step() at 30 steps per second of game time (StoryPlayer
@@ -62,7 +63,7 @@ export class StorySession {
     this.gl = null; this.assets = null; this.loop = null; this.core = null; this.ui = null; this.audio = null;
     this.renderer = null; this.error = null; this.ended = false; this.endReason = null;
     this.speaker = ""; this.text = "";
-    this._stepping = null; this._draw = true; this._gl = null; this._started = null;
+    this._stepping = null; this._draw = true; this._gl = null; this._started = null; this._dialogVideo = false;
   }
 
   // gl: WebGL2RenderingContext, or null (headless: nothing is drawn, the UI and the characters still run)
@@ -312,8 +313,25 @@ export class StorySession {
   setAuto(on) { this.core.pressAuto(!!on); }
   setSpeed(speed) { this.core.pressFastForward(speed); }
   skip() { this.core.stop(1); }
-  // user volume of a sound category ("Bgm", "Se", "Voice"): the option volume ("<Cat>Config"), 0..1
-  setVolume(category, v) { if (this.audio.setOptionVolume) this.audio.setOptionVolume(category, v); }
+  // user volume of a sound category ("Bgm", "Se", "Voice"): the option volume ("<Cat>Config"), 0..1; "Movie": the
+  // movie sound volume of the videos (no category, no option of the app's; 1 by default)
+  setVolume(category, v) {
+    if (category === "Movie") { if (this.audio.setMovieVolume) this.audio.setMovieVolume(v); return; }
+    if (this.audio.setOptionVolume) this.audio.setOptionVolume(category, v);
+  }
+  // the host's pause (no step runs meanwhile): the videos hold too, their sound with them
+  setPaused(on) { const v = this.ctx && storyVideo(this.ctx); if (v) v.setHeld(on); }
+  // the skip confirmation of the story menu: open, the playback waits (AdvPlayer.OnOpenDialog -> Model.SetPause) and a
+  // playing video pauses (OnSkipButtonTapped -> TryPauseCurrentVideo); closed, the playback goes on and, unless the
+  // skip was confirmed (resume false: the stop follows), so does the video (OnConfirmDialogButtonTapped ->
+  // ResumeCurrentVideoIfNeeded)
+  setDialogOpen(open, resume = true) {
+    if (!this.core) return;
+    this.core.isPause = !!open;
+    if (open) { this._dialogVideo = this._dialogVideo || tryPauseCurrentVideo(this.ctx); return; }
+    if (resume) resumeCurrentVideoIfNeeded(this.ctx, this._dialogVideo);
+    this._dialogVideo = false;
+  }
   // moves the playing movie to `sec` seconds of it (a seek of the host's; the game has none): the rows after a Movie
   // row wait for its end alone. -> a promise of false when no video can be seeked now (`video.seekable`)
   seekVideo(sec) { return this.ctx ? seekStoryVideo(this.ctx, sec) : Promise.resolve(false); }

@@ -10,6 +10,7 @@
 // cue time-stretched (timestretch.js; the pitch is kept).
 // Category bus gains are SoundVolumeSettings.DefaultVolume x option volume
 // (Bgm 0.7, Se 1.0, Voice 1.0 with default options).
+// The sound of a story video has a bus of its own outside the categories (connectMedia, movie volume below).
 
 import { timeStretch } from "./timestretch.js";
 
@@ -85,6 +86,26 @@ export class Audio {
     for (const name of Object.keys(SOUND_VOLUME_SETTINGS)) this.configVolumes[name] = 1;
     this.stretched = new Map();              // time-stretched buffers by cue and speed
     this.categoryVolumes = new SoundCategoryVolumes((name) => this._applyBus(name));
+    this.movieVolume = 1;
+    this.movieBus = this.ctx.createGain();
+    this.movieBus.connect(this.ctx.destination);
+  }
+
+  // The movie sound volume (Fwk.Local.LocalDataBase.MovieSoundVolume through GameConfig.SetMovieSoundVolume ->
+  // VideoManager.ChangeVolume, every playing video's CriMana.Player.SetVolume; a video prepared later takes it too,
+  // AdvPlaybackSession.GetMovieSoundVolume). 1.0 by default (GameConfigDataModel's initial value); no volume option of
+  // the app changes it, and no category (Bgm, Se, Voice) applies to it.
+  setMovieVolume(v) {
+    this.movieVolume = Math.min(1, Math.max(0, Number(v) || 0));
+    this.movieBus.gain.setValueAtTime(this.movieVolume, this.ctx.currentTime);
+  }
+
+  // The sound of a story video (the USM's audio track, which CriMana plays through its own AtomEx player in the
+  // advanced audio mode) on the movie bus: an HTMLMediaElement of this document -> { disconnect() }
+  connectMedia(el) {
+    const node = this.ctx.createMediaElementSource(el);
+    node.connect(this.movieBus);
+    return { disconnect() { node.disconnect(); } };
   }
 
   // the bus of a category at its category volume x its option volume
