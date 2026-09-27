@@ -5,6 +5,7 @@ import { CanvasNode } from "./canvas.js";
 import { DT_PLUGIN, dtTo, storyDOTween } from "./dotween-core.js";
 import { SCREEN_CANVAS_PATH, storyScreen, storyUIDoc } from "./screen.js";
 import { featureSlot, featureState } from "./state.js";
+import { loopWaitUntil } from "./timing.js";
 
 // Videos of Movie and Clip rows: the loader's video queue (AdvEpisodeResourceLoader: VideoIDs of the Movie / Clip rows
 // in row order, at most two prepared ahead; the commands take Session.CurrentVideoInfo, not their own VideoID), the
@@ -16,11 +17,17 @@ import { featureSlot, featureState } from "./state.js";
 // floor(time x frame rate). The end (PlayEnd) is reached at frames / frame rate. A browser page shows the WebM of the
 // story data through an HTMLVideoElement kept on that clock.
 
-export const CRI_STATUS = Object.freeze({ Stop: 0, Dechead: 1, WaitPrep: 2, Prep: 3, Ready: 4, Playing: 5, PlayEnd: 6 });
+export const CRI_STATUS = Object.freeze({ Stop: 0, Dechead: 1, WaitPrep: 2, Prep: 3, Ready: 4, Playing: 5, PlayEnd: 6,
+                                          Error: 7, StopProcessing: 8 });
 const MAX_VIDEO_LOAD_TASK = 2;                // AdvEpisodeResourceLoader.MaxVideoLoadTask
 const MAX_SPEED = 3;                          // VideoInfo.ChangePlaybackSpeed cap
 const STALL_SECONDS = 5;                      // AdvVideoTimeline stall limit
 export const TIMELINE = Object.freeze({ Reached: 0, Waiting: 1, Aborted: 2 });
+// AdvVideoCommandHelper constants of the seek re-speed
+const FAST_FORWARD_MAX_FRAME_DROP = 3, SEEK_RESPEED_FREEZE_ALPHA = F(0.7), SEEK_RESPEED_MASK_ALPHA = 0;
+
+// Mathf.Approximately
+export const approximately = (a, b) => Math.abs(b - a) < Math.max(1e-6 * Math.max(Math.abs(a), Math.abs(b)), 1.1210387714598537e-44);
 
 const waitUntil = async (loop, pred, stop) => {
   while (!pred()) { await loop.yield("Update"); if (stop && stop()) return false; }
@@ -41,11 +48,15 @@ export class VideoInfo {
     this.videoSize = m._width > 0 && m._height > 0 ? { x: m._width, y: m._height } : { x: rec.displayWidth || 0, y: rec.displayHeight || 0 };
     this.status = CRI_STATUS.Ready;
     this.time = 0; this.speed = 1; this.paused = false;
+    this.seekFrame = 0;                      // CriMana.Player.SetSeekPosition: the frame a start plays from
+    this.maxFrameDrop = null;                // CriMana.Player.SetMaxFrameDrop (not read here: this clock drops no frame)
     this.onPlayFinished = [];
     this.source = source;                    // null once released
   }
 
   isPlaying() { return this.status === CRI_STATUS.Playing; }
+  // VideoInfo.IsStopping: the player's StopProcessing status; true without a source
+  isStopping() { return !this.source || this.status === CRI_STATUS.StopProcessing; }
   isPlayFinished() { return !this.source || this.status === CRI_STATUS.PlayEnd; }
   isStopComplete() { return this.status === CRI_STATUS.Stop; }
   isReady() { return this.status === CRI_STATUS.Ready; }
@@ -56,10 +67,20 @@ export class VideoInfo {
   play(speed) { if (speed !== undefined) this.changePlaybackSpeed(speed); this.start(); }
   start() {
     if (!this.source) return;
-    if (this.status === CRI_STATUS.Ready || this.status === CRI_STATUS.Stop) { this.status = CRI_STATUS.Playing; this.time = 0; }
+    if (this.status === CRI_STATUS.Ready || this.status === CRI_STATUS.Stop) {
+      this.status = CRI_STATUS.Playing; this.time = this.seekFrame / this.frameRate;
+    }
     this.source.sync(this);
   }
   stop() { if (this.source) { this.status = CRI_STATUS.Stop; this.source.sync(this); } }
+  // VideoInfo.StopForSeek (CriMana.Player.StopForSeek: the native player stops and keeps the movie for a start at a
+  // seek position), SetSeekPosition, SetMaxFrameDrop
+  // ENGINE: CRI Mana stops over some frames (StopProcessing) and, on the next start, prepares the movie again at the
+  // seek position (Dechead .. Ready) before it plays. Here the stop and that prepare are instant, so a seek re-speed
+  // holds the video for the three Update ticks of its waits only.
+  stopForSeek() { this.stop(); }
+  setSeekPosition(frame) { if (this.source) this.seekFrame = frame; }
+  setMaxFrameDrop(n) { if (this.source) this.maxFrameDrop = n; }
   prepare() { if (this.source && this.status === CRI_STATUS.Stop) this.status = CRI_STATUS.Ready; }
   pause(on) { this.paused = !!on; if (this.source) this.source.sync(this); }
 
@@ -166,6 +187,12 @@ export class StoryVideo {
     this.timeline = new VideoTimeline();
     this.flow = { clipVideoPlaying: false, clipVideoSkip: false, clipControlAvailable: false, movieVideoPlaying: false };
     this.view = new VideoView(ctx);
+    // the seek re-speed members of AdvPlaybackSession
+    this.seekRespeeding = false;              // IsVideoSeekRespeeding
+    this.seekRespeedAdvancedFrames = 0;       // VideoSeekRespeedAdvancedFrameTotal
+    this.respeedSessionActive = false;        // _isVideoSeekRespeedSessionActive
+    this.respeedRerunRequested = false;       // _isVideoSeekRespeedRerunRequested
+    this.respeedPendingOnResume = false;      // IsVideoRespeedPendingOnResume (read on a resume this player has not)
     this._hook = (l) => this._update(l.deltaTime);
     ctx.loop.on("update", this._hook);
     // Preload: prepare up to two, then the first becomes the current video
@@ -174,9 +201,9 @@ export class StoryVideo {
   }
 
   get hasCurrentVideoInfo() { return this.current !== null; }
-  // Session.VideoPlaying / VideoPlayingOrSeekRespeeding (no seek re-speed here)
+  // Session.VideoPlaying / VideoPlayingOrSeekRespeeding
   get videoPlaying() { const v = this.current; return !!v && (v.isPlaying() || v.isPlayFinished()); }
-  get videoPlayingOrSeekRespeeding() { const v = this.current; return !!v && v.isPlaying(); }
+  get videoPlayingOrSeekRespeeding() { const v = this.current; return !!v && (v.isPlaying() || this.seekRespeeding); }
   get isClipVideoPlaying() { return this.flow.clipVideoPlaying; }
   get isVideoPlaying() { return this.flow.clipVideoPlaying || this.flow.movieVideoPlaying; }
 
@@ -217,12 +244,12 @@ export class StoryVideo {
     }
   }
 
-  // Session.UpdateVideoTimeline(delta, isPlayerPaused)
+  // Session.UpdateVideoTimeline(delta, isPlayerPaused): a seek re-speed counts as progressing and suspends the stall
   updateTimeline(delta, paused) {
     const v = this.current, has = !!v && v.uniqueVideoId === this.timeline.videoId;
     return this.timeline.update({
-      hasVideo: has, isPlaybackFinished: has && v.isPlayFinished(), isProgressing: has && v.isPlaying(),
-      isSuspended: paused || (has && v.isPaused()), displayedFrameNo: has ? v.displayedFrameNo() : -1,
+      hasVideo: has, isPlaybackFinished: has && v.isPlayFinished(), isProgressing: has && (v.isPlaying() || this.seekRespeeding),
+      isSuspended: paused || (has && v.isPaused()) || this.seekRespeeding, displayedFrameNo: has ? v.displayedFrameNo() : -1,
       frameRate: has ? v.frameRate : 0, deltaSeconds: delta,
     });
   }
@@ -232,8 +259,29 @@ export class StoryVideo {
 
   setVideoAlpha(alpha, duration, cancelled) { return this.view.setAlpha(alpha, duration, cancelled); }
 
-  // ReapplyPlaybackSpeed for the current video (a speed change also reaches an audio video directly here)
-  setPlaybackSpeed(rate) { if (this.current) this.current.changePlaybackSpeed(rate); }
+  // AdvLocalDataHandler.ReapplyPlaybackSpeed for the current video: one without audio takes the speed at once; one
+  // with audio is re-speeded (SeekRespeedAudioVideoAsync, forgotten) while it plays or re-speeds, marked for a
+  // re-speed on resume while it or the player is paused, and left alone otherwise (its command prepares it at the
+  // speed of its start)
+  setPlaybackSpeed(rate) {
+    const v = this.current;
+    if (!v) return;
+    if (!v.hasAudio) { v.changePlaybackSpeed(rate); return; }
+    const p = featureState(this.ctx).core;
+    if (!p) throw new StoryCommandError("the video re-speed needs the player");
+    if (v.isPaused() || p.isPause) { this.respeedPendingOnResume = true; return; }
+    if (v.isPlaying() || this.seekRespeeding) seekRespeedAudioVideo(this, p).catch((e) => p.fail(e));
+  }
+
+  // TryBeginVideoSeekRespeedSession: false (and a rerun requested) while a session runs
+  tryBeginSeekRespeedSession() {
+    if (this.respeedSessionActive) { this.respeedRerunRequested = true; return false; }
+    this.respeedSessionActive = true;
+    return true;
+  }
+  endSeekRespeedSession() { this.respeedSessionActive = false; }
+  consumeSeekRespeedRerunRequest() { const r = this.respeedRerunRequested; this.respeedRerunRequested = false; return r; }
+  addSeekRespeedAdvancedFrames(n) { if (n > 0) this.seekRespeedAdvancedFrames += n; }
 
   // AdvPlayer.Stop: every loaded video stopped
   dispose() {
@@ -349,6 +397,73 @@ export class VideoView {
 }
 
 export const storyVideo = (ctx) => featureState(ctx).video || null;
+
+// AdvVideoCommandHelper.SeekRespeedAudioVideoAsync(ctx, CommonCancellationToken): one session at a time (a request
+// while one runs reruns it once at its end). The screen shows a copy of the last frame over the video at 0.7
+// (TryShowVideoSeekFreeze), the video is masked to alpha 0 when it is visible, RunSeekRespeedLoopAsync restarts it at
+// the new speed, then the video's alpha comes back and two frames later the copy goes; a lost or changed video ends
+// it without either. A stop of the playback runs the finally part only (the game's cancellation exception).
+const seekRespeedAudioVideo = async (v, p) => {
+  if (!v.tryBeginSeekRespeedSession()) return;
+  const screen = v.view.screen, cancelled = () => p.cancelled;
+  let masked = false, maskVideoId = 0, maskTargetAlpha = 0;
+  const sameVideo = () => maskVideoId !== 0 && !!v.current && v.current.uniqueVideoId === maskVideoId;
+  try {
+    maskVideoId = v.current ? v.current.uniqueVideoId : 0;
+    maskTargetAlpha = v.view.targetAlpha;
+    const freezeShown = screen.tryShowVideoSeekFreeze(SEEK_RESPEED_FREEZE_ALPHA);
+    if (maskTargetAlpha > 0) { masked = true; await v.setVideoAlpha(SEEK_RESPEED_MASK_ALPHA, 0, cancelled); }
+    if (!await runSeekRespeedLoop(v, p)) return;
+    if (masked && sameVideo()) { await v.setVideoAlpha(maskTargetAlpha, 0, cancelled); masked = false; }
+    if (freezeShown && sameVideo()) {                                  // UniTask.DelayFrame(2, token)
+      const target = p.ctx.loop.frameCount + 2;
+      if (!await loopWaitUntil(p.ctx.loop, () => p.ctx.loop.frameCount >= target, cancelled)) return;
+      screen.clearVideoSeekFreeze();
+    }
+  } finally {
+    if (masked && sameVideo()) v.setVideoAlpha(maskTargetAlpha, 0, cancelled).catch((e) => p.fail(e));
+    masked = false;
+    screen.clearVideoSeekFreeze();
+    v.endSeekRespeedSession();
+  }
+  if (v.consumeSeekRespeedRerunRequest() && !p.cancelled) seekRespeedAudioVideo(v, p).catch((e) => p.fail(e));
+};
+
+// AdvVideoCommandHelper.RunSeekRespeedLoopAsync: while the current audio video plays (a paused one is marked for a
+// re-speed on resume), IsVideoSeekRespeeding is set and the video is stopped for a seek at its displayed frame; once
+// stopped, unless the video changed, a pause came or the flag was cleared, it restarts there at the model's speed (at
+// most 3 frames dropped) and the frames it advanced until it shows another frame are added to the total. Again while
+// the speed changed meanwhile (Mathf.Approximately). The waits are UniTask.WaitWhile / WaitUntil at Update.
+// -> false when the playback stopped
+const runSeekRespeedLoop = async (v, p) => {
+  const loop = p.ctx.loop, cancelled = () => p.cancelled;
+  for (;;) {
+    const video = v.current;
+    if (!video || !video.hasAudio || !video.isPlaying()) return true;
+    if (video.isPaused()) { v.respeedPendingOnResume = true; return true; }
+    const targetSpeed = F(p.speedRate()), id = video.uniqueVideoId;
+    const same = () => !!v.current && v.current.uniqueVideoId === id;
+    v.seekRespeeding = true;                                           // BeginVideoSeekRespeed
+    try {
+      const frame = video.displayedFrameNo();
+      video.stopForSeek();
+      if (!await loopWaitUntil(loop, () => !(video.isStopping() && v.seekRespeeding && same()), cancelled)) return false;
+      if (v.seekRespeeding && same() && !video.isPaused() && !p.isPause) {
+        video.setMaxFrameDrop(FAST_FORWARD_MAX_FRAME_DROP);
+        video.changePlaybackSpeed(targetSpeed);
+        video.setSeekPosition(frame);
+        video.play();
+        if (!await loopWaitUntil(loop, () => video.isPlaying() || video.isPlayFinished() || !same() || !v.seekRespeeding,
+                                 cancelled)) return false;
+        if (!await loopWaitUntil(loop, () => video.displayedFrameNo() !== frame || !video.isPlaying() || video.isPaused()
+                                   || p.isPause || !same() || !v.seekRespeeding, cancelled)) return false;
+        if (same()) v.addSeekRespeedAdvancedFrames(video.displayedFrameNo() - frame);
+      }
+    } finally { v.seekRespeeding = false; }                            // EndVideoSeekRespeed
+    if (p.cancelled) return false;
+    if (approximately(targetSpeed, F(p.speedRate()))) return true;
+  }
+};
 
 export const loadVideos = (ctx) => {
   const uses = ctx.episode.commands.some((c) => (c.cmd === "Movie" || c.cmd === "Clip") && !c.IgnoreData);

@@ -204,9 +204,9 @@ story player in their host screen ([story-simple.md](story-simple.md)).
   and a frame that would draw one fails.
 - UIParticle effects on the still canvases: not drawn; see the exception above (the frame canvases draw them, and
   no still of the current stories has one).
-- The re-speed of a video after a seek (`VideoPlayingOrSeekRespeeding`): a speed change reaches the playing video at
-  once.
 - Stage shadow textures: refused (see above).
+- The story menu's open state (`MenuButtonsParent`: its buttons and their language-dependent sprites): the menu stays
+  closed, as it is until the viewer opens it; the control bar above takes its place.
 
 ### Engine behaviour
 

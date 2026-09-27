@@ -1,9 +1,10 @@
 import { F } from "../../engine/core.js";
 import { FxParticleSystem, FxV, PS_STOP } from "../../engine/particles.js";
+import { UnityRandom } from "../../engine/random.js";
 import { UI_STRIDE } from "../../engine/ugui.js";
 import { StoryCommandError } from "../interfaces.js";
 import { CanvasNode, compOf } from "./canvas.js";
-import { featureState } from "./state.js";
+import { featureSlot } from "./state.js";
 
 // Coffee.UIParticle (v4) on the frame canvas: the particle systems of a prefab simulated and baked by their UIParticle
 // and drawn as canvas graphics in hierarchy order (UIParticle, UIParticleRenderer and UIParticleUpdater of the
@@ -25,6 +26,14 @@ import { featureState } from "./state.js";
 // ENGINE: activity is sampled once per drawn frame; a GameObject turned off and on again between two draws counts as
 // staying active.
 // A headless session draws nothing and does not update the UIParticles (they only feed the canvas renderers).
+// ENGINE: the particle systems draw their random numbers natively (every system of these frames has autoRandomSeed on:
+// a new seed per Play), not from UnityEngine.Random. The managed Random is the native scripting generator
+// (GetScriptingRand), seeded once at start and left to the scripts (Unity 2022.3 Random docs); Coffee.UIParticle calls
+// Random.Range only when m_GroupId differs from m_GroupMaxId (ResetGroupId, OnEnable), which is refused below. How an
+// automatic seed is chosen is not known: the frame particles here draw from one stream of their own per story, with a
+// fixed seed, so UnityEngine.Random (DOTween shakes, eye blinks) stays the scripts' alone, drawn or headless.
+const PARTICLE_SEED = 0x55495053;
+const particleRandom = (ctx) => featureSlot(ctx, "uiParticleRandom", () => new UnityRandom(PARTICLE_SEED));
 
 const SHARING_NONE = 0;
 const AUTO_SCALING_UIPARTICLE = 1, AUTO_SCALING_TRANSFORM = 2;
@@ -292,6 +301,7 @@ class UIParticle {
     if (comp.m_MeshSharing !== SHARING_NONE) refuse(`mesh sharing ${comp.m_MeshSharing}`);
     if (comp.m_UseCustomView) refuse("custom view");
     if ((comp.m_AnimatableProperties || []).length) refuse("animatable properties");
+    if (comp.m_GroupId !== comp.m_GroupMaxId) refuse("group id range (UnityEngine.Random.Range)");
     if (![0, 1, 2].includes(this.autoScalingMode) || ![0, 1].includes(this.positionMode))
       refuse(`modes ${this.autoScalingMode} / ${this.positionMode}`);
     this.scale3D = v3(comp.m_Scale3D);
@@ -401,7 +411,7 @@ class UIParticle {
 export class PrefabParticles {
   constructor(host, prefab, nodes, name) {
     this.host = host; this.prefab = prefab; this.name = name;
-    const rng = featureState(host.ctx).random;
+    const rng = particleRandom(host.ctx);
     this.entries = []; this.byPath = new Map(); this.uiParticles = []; this.activity = [];
     for (const rec of nodes) {
       const node = prefab.node(rec.path);

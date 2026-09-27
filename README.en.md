@@ -107,14 +107,12 @@ a UIParticle graphic on a still, which is found only while drawing: the episode 
 
 Checked on the 946 episodes of one region's data, without sound files (English text unless stated):
 
-- Headless, on a faster clock: 944 play to their end. 2 are refused before they start because a text uses something
-  the text layout does not reproduce yet (an underline tag; an emoji variation selector after an emoji sprite).
+- Headless, on a faster clock: all 946 play to their end.
 - Drawn at normal speed, a sample of 57 episodes covering every kind of drawn feature, the canvas particles of frames,
   the centered talk window, the chat phone and the spot rooms lit by URP among them: all 57 play to their end.
-- The 9 episodes with emoji, in Japanese and in English, drawn on the faster clock: 17 of the 18 play to their end;
-  the English text of one is refused before it starts (the variation selector above).
-- Drawn twice, the 20 sampled episodes and the 17 emoji runs that play to their end give the same commands, lines
-  and per-frame state in both runs.
+- The 9 episodes with emoji, in Japanese and in English, drawn on the faster clock: all 18 play to their end.
+- Drawn twice, the 20 sampled episodes and the 18 emoji runs give the same commands, lines and per-frame state in
+  both runs.
 - Every file a story reads is listed in its manifest.
 
 ## Browser support

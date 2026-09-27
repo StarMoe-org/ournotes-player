@@ -143,6 +143,21 @@ export class StoryScreen {
     this.screenImage = new CanvasNode(imgRec, this.screenCanvas.root);
     this.screenImage.rawImage = { ...imgRec.rawImage };
     if (this.screenImage.rawImage.material) throw new StoryCommandError("video and still screen image: material not implemented");
+    // UIAdvWidget.InitVideoSeekFreezeOverlay: "VideoSeekFreeze" on the screen image's parent with the screen image's
+    // anchors, position, size and pivot (unrotated, unit scale), a RawImage without raycasts under a CanvasGroup at
+    // alpha 0, last sibling, inactive
+    const si = this.screenImage, v2 = (q) => ({ x: q.x, y: q.y });
+    this.freeze = new CanvasNode({ path: `${SCREEN_IMAGE_CANVAS}/VideoSeekFreeze`, name: "VideoSeekFreeze", active: false,
+      localPosition: { x: 0, y: 0, z: 0 }, localRotation: { x: 0, y: 0, z: 0, w: 1 }, localScale: { x: 1, y: 1, z: 1 },
+      rect: { m_AnchorMin: v2(si.anchorMin), m_AnchorMax: v2(si.anchorMax), m_AnchoredPosition: v2(si.anchoredPosition),
+              m_SizeDelta: v2(si.sizeDelta), m_Pivot: v2(si.pivot) },
+      canvasGroup: { m_Enabled: 1, m_Alpha: 0, m_IgnoreParentGroups: 0 } }, this.screenCanvas.root);
+    this.freezeTarget = null;             // _videoSeekFreezeTexture
+    this.freezeVisible = false;           // _isVideoSeekFreezeVisible
+    this._freezeCopy = false;             // a copy of the render texture due at the next draw
+    this._freezeCopied = false;           // the overlay shows that copy
+    this._cameraDrawn = false;            // the last draw drew the camera's canvases into the render texture
+    this._viewport = null;                // the size of the last draw
     this.dotween = new DOTargets();       // DOKill targets of the canvas tweens
     this.animators = [];                  // CanvasAnimator, updated in the animation phase
     this.updaters = [];                   // MonoBehaviour Updates (update phase): fn(dt)
@@ -244,13 +259,76 @@ export class StoryScreen {
     return { node: n, material: null, glTex: () => this.target, verts: UIDraw.pack(m.verts, n, 1), idx: Uint32Array.from(m.idx) };
   }
 
+  // UIAdvWidget.TryShowVideoSeekFreeze(alpha): the render texture blitted into the overlay's texture (made again at
+  // another size, "UIAdvWidget.VideoSeekFreeze.RenderTexture", no depth), the overlay given the screen image's uvRect
+  // and rect, active and last, its group at alpha; true. The game's render texture always exists, so this returns
+  // true drawn or not. The copy is made at the next draw, before the camera draws: nothing draws into the render
+  // texture in between.
+  tryShowVideoSeekFreeze(alpha) {
+    const si = this.screenImage, n = this.freeze;
+    for (const k of ["anchorMin", "anchorMax", "anchoredPosition", "sizeDelta", "pivot"]) n[k] = { ...si[k] };
+    n.activeSelf = true;
+    n.setParentLast(this.screenCanvas.root);
+    n.canvasGroup.alpha = F(alpha);
+    this._freezeCopy = true;
+    this.freezeVisible = true;
+    return true;
+  }
+
+  // UIAdvWidget.ClearVideoSeekFreeze: the group's tweens killed and its alpha 0, the overlay inactive without a
+  // texture (its render texture kept). Also run on a viewport change (OnAdvViewportChanged, OnResolutionChanged) and
+  // by UIAdvWidget.Refresh (the overlay starts cleared here).
+  clearVideoSeekFreeze() {
+    const n = this.freeze;
+    this.dotween.kill(n.canvasGroup);
+    n.canvasGroup.alpha = 0;
+    n.activeSelf = false;
+    this._freezeCopy = false; this._freezeCopied = false;
+    this.freezeVisible = false;
+  }
+
+  // Graphics.Blit(render texture, overlay texture): the frame the last draw left; a last draw without the camera's
+  // canvases drew no screen image either, so the overlay has nothing to show then
+  _copyVideoSeekFreeze(gl) {
+    this._freezeCopy = false;
+    const src = this._cameraDrawn ? this.target : null;
+    this._freezeCopied = !!src;
+    if (!src) return;
+    const read = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), draw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+    let t = this.freezeTarget;
+    if (t && (t.width !== src.width || t.height !== src.height)) { t.release(); t = null; }
+    if (!t) t = this.freezeTarget = new GLTarget(gl, src.width, src.height, { label: "UIAdvWidget.VideoSeekFreeze.RenderTexture" });
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, src.fb);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.fb);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.blitFramebuffer(0, 0, src.width, src.height, 0, 0, t.width, t.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, read);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, draw);
+  }
+
+  // the overlay's RawImage over its rect: white, the copy, the screen image's uvRect (the whole texture), under its
+  // group's alpha
+  _freezeItems() {
+    const n = this.freeze;
+    if (!n.activeSelf || !this._freezeCopied) return [];
+    const r = n.rect, m = new UIMesh();
+    m.addQuad(r.x, r.y, r.x + r.w, r.y + r.h, [255, 255, 255, 255], 0, 0, 1, 1);
+    return [{ node: n, material: null, glTex: () => this.freezeTarget, verts: UIDraw.pack(m.verts, n, n.canvasGroup.alpha),
+              idx: Uint32Array.from(m.idx) }];
+  }
+
   render({ gl, width, height }) {
+    const vp = this._viewport;
+    if (vp && (vp.w !== width || vp.h !== height)) this.clearVideoSeekFreeze();
+    this._viewport = { w: width, h: height };
     this.layoutAll(width, height);
     if (!gl || !this.gl) return;
+    if (this._freezeCopy) this._copyVideoSeekFreeze(gl);
     gl.disable(gl.SCISSOR_TEST);
     const cam = ["video", "still"].map((k) => [this.canvas[k], this.canvas[k].drawItems((n, a) => this._extra(n, a))]);
-    if (cam.some(([, items]) => items.length)) {
-      const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT);
+    this._cameraDrawn = cam.some(([, items]) => items.length);
+    if (this._cameraDrawn) {
+      const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING), port = gl.getParameter(gl.VIEWPORT);
       const color = this._cameraColor(gl, width, height);
       color.bind();
       const bg = this.camera.camera.m_BackGroundColor;
@@ -264,8 +342,11 @@ export class StoryScreen {
                        { width, height, frameCount: this.ctx.loop.frameCount, grain: R.grain, gray: R.tex.gray,
                          black: R.tex.black, camera: this._cameraMatrices(width, height) });
       gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
-      gl.viewport(vp[0], vp[1], vp[2], vp[3]);
-      this.gl.draw(this.screenCanvas, [this._screenItem()], width, height);
+      gl.viewport(port[0], port[1], port[2], port[3]);
+      this.gl.draw(this.screenCanvas, [this._screenItem(), ...this._freezeItems()], width, height);
+    } else {
+      const freeze = this._freezeItems();
+      if (freeze.length) this.gl.draw(this.screenCanvas, freeze, width, height);
     }
     const frame = this.canvas.frame;
     if (this.frameParticles) this.frameParticles.refresh(this.ctx.loop);
@@ -284,6 +365,7 @@ export class StoryScreen {
     for (const [phase, fn] of this._hooks) { const hs = ctx.loop.hooks[phase], i = hs.indexOf(fn); if (i >= 0) hs.splice(i, 1); }
     ctx.ui.layers[ADV_CANVAS_LAYER.Still].remove(this.view);
     if (this.target) this.target.release();
+    if (this.freezeTarget) this.freezeTarget.release();
     if (this.cameraColor) this.cameraColor.release();
     if (this.gl) this.gl.dispose();
   }

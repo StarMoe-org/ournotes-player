@@ -42,6 +42,13 @@ projection, volume mask or volume update mode), the episode is refused with the 
   shake, a DOTween move along z, a rotation about x or y) is drawn through the camera's perspective projection. Video
   black bars come from the video view's stencil mask and curtain. In a browser the videos play through an HTML video
   element kept on the player's video clock; a headless session keeps the clock only.
+- **The video seek re-speed.** A speed change while a video with audio plays stops the video at its displayed frame
+  and plays it again from there at the new speed (a video without audio takes the new speed at once). Meanwhile the
+  video is masked and the screen shows a copy of the last drawn frame over it at alpha 0.7, removed two frames after
+  the video shows its first new frame. A change during a re-speed runs it once more. Movie rows, captions and the
+  delay helpers wait while it runs, and the delays then take off the time of the frames the video advanced. A viewport
+  change clears the copy. The pause and resume paths that would pick up a re-speed marked for later are not in this
+  player (it pauses neither the model nor a video), so that mark is set and never read.
 - **Frames** on the frame canvas with their images and Animators, plain Transforms included, and their canvas
   particles: Coffee.UIParticle simulates the frame's particle systems and bakes them with the UI camera (the story UI
   data's `uiCamera`) into canvas meshes, drawn in hierarchy order with the frame's other graphics. A session without
@@ -71,8 +78,6 @@ projection, volume mask or volume update mode), the episode is refused with the 
 - **Canvas text** in frames and stills: such a node raises when it is drawn.
 - **Canvas particles in stills**: such a node raises when it is drawn while visible. A headless session plays these
   stills.
-- **The video seek freeze.** The game re-prepares a video with audio at a new playback speed and covers the gap with a
-  copy of the video texture; here the video changes speed without the re-prepare.
 
 ## Not reproduced
 

@@ -483,11 +483,13 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 - the UI camera's world placement is not in the data; the origin with no rotation stands for it. Only
 - activating a hierarchy wakes its native components before its scripts, so the systems already play (Play on
 - activity is sampled once per drawn frame; a GameObject turned off and on again between two draws counts as
+- the particle systems draw their random numbers natively (every system of these frames has autoRandomSeed on:
 - CanvasRenderer multiplies the vertex alpha by the inherited CanvasGroup alpha; CombineMeshes transforms the
 
 **`src/story/features/video.js`**
 
 - CRI Mana decodes and clocks the movie by its audio track. Here a video is prepared at once, starts playing on
+- CRI Mana stops over some frames (StopProcessing) and, on the next start, prepares the movie again at the
 
 **`src/story/field.js`**
 

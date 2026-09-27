@@ -275,8 +275,8 @@ export class StoryUI {
       }
       for (const p of tmpUnsupported(shown, talk.tokenOptions())) problems.add(p);
       const f = talk.font;
-      if (talk.richText && /<mark[=>\s]/i.test(shown) && !f.characters["95"])
-        problems.add(`${f.name}: U+005F (the highlight glyph) not in the font data`);
+      if (talk.richText && /<(mark|u)[=>\s]/i.test(shown) && !f.characters["95"])
+        problems.add(`${f.name}: U+005F (the underline and highlight glyph) not in the font data`);
       for (const ch of plain.replace(/<sprite name="[^"]*">/g, "")) {
         const u = ch.codePointAt(0);
         if (u === 10 || u === 13 || u === 9 || u === 0x200B) continue;

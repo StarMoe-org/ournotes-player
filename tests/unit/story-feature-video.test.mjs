@@ -1,12 +1,17 @@
 // Movie / Clip / Subtitles on a real PlayerLoop at 30 fps with synthetic video records and a stand-in UI: the video
 // queue, the view's fades, the clip's frame clock and the timeline Delay rows follow, the clip's end, the stop marker,
-// the Movie's blocking, captions over a clip. Synthetic inputs only.
+// the Movie's blocking, captions over a clip, and the seek re-speed of an audio video on a speed change (the delay
+// helpers around it, the screen's freeze overlay). Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PlayerLoop } from "../../src/engine/loop.js";
+import { GLTarget } from "../../src/engine/texture.js";
 import { commandHandler, createStoryUILayers } from "../../src/story/interfaces.js";
-import { disposeStoryFeatures, installStoryFeatures } from "../../src/story/features/index.js";
+import { delayWithPauseSpeedAdjustment } from "../../src/story/commands/misc.js";
+import { disposeStoryFeatures, installStoryFeatures, setStoryFeaturesSpeed } from "../../src/story/features/index.js";
+import { calcVideoRealDuration, delayWithSpeedAdjustment } from "../../src/story/features/timing.js";
 import { delayUntilVideoTimeline, storyVideo } from "../../src/story/features/video.js";
+import { headlessGL } from "../../scripts/lib/headless.mjs";
 
 const flush = () => new Promise((res) => setImmediate(res));
 const settle = async (loop, promise, max = 600) => {
@@ -82,7 +87,7 @@ const makePlayer = (rows, { auto = true } = {}) => {
                 episode: { commands: rows.map((r, i) => ({ i, ...r })) }, story: { ui: "ui/ui.json", videos: "videos/videos.json" },
                 assets: { json: (p) => { assert.ok(docs[p], p); return docs[p]; } } };
   const p = { ctx, playbackSpeed: 10, cancelled: false, shortCutIndex: -1, isAutoPlay: auto, isPause: false, nextStep: 0, lineIndex: -1,
-              session: { voicePlayIds: [], withVoice: true },
+              session: { voicePlayIds: [], withVoice: true }, errors: [], fail(e) { this.errors.push(e); },
               speedRate() { return this.playbackSpeed / 10; }, get shortcut() { return this.shortCutIndex >= 0; },
               calcDuration(d, def = 0) { return this.shortcut ? 0 : (d ? Math.max(d, 0) : def) / this.speedRate(); },
               changeNextStepStateOnAutoPlay() { this.nextStep = this.isAutoPlay ? 2 : 1; } };
@@ -178,5 +183,194 @@ test("Subtitles: a caption over a clip waits for the clip's end, then a tap (man
   // an invalid text id clears the caption; shortcut rows show nothing
   await settle(t.loop, cmd(t, { cmd: "Subtitles", i: 2 }));
   assert.ok(t.calls.some((c) => c[0] === "clearSubtitles"));
+  disposeStoryFeatures(t.ctx);
+});
+
+// ------------------------------------------------------------------------------------------------ seek re-speed
+const F = Math.fround;
+// the player's speed change (AdvLocalDataHandler.UpdatePlaybackSpeed -> ReapplyPlaybackSpeed)
+const setSpeed = (t, speed) => { t.p.playbackSpeed = speed; setStoryFeaturesSpeed(t.ctx, t.p.speedRate()); };
+const playClip = async (t, id) => {
+  await settle(t.loop, cmd(t, { cmd: "Clip", VideoID: id, i: 0 }));
+  return storyVideo(t.ctx).current;
+};
+
+test("seek re-speed: a speed change stops a playing audio clip at its frame and plays it again there at the new speed", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 13 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const v = storyVideo(t.ctx), screen = v.view.screen;
+  const video = await playClip(t, 13);
+  assert.equal(video.hasAudio, true);
+  await steps(t.loop, 10);
+  assert.equal(video.displayedFrameNo(), 10);
+  setSpeed(t, 20);
+  await flush();
+  // at once: re-speeding, the video stopped, the copy of the last frame over it at 0.7, the video masked
+  assert.equal(v.seekRespeeding, true);
+  assert.equal(video.isPlaying(), false);
+  assert.equal(v.videoPlayingOrSeekRespeeding, true);
+  assert.equal(screen.freeze.activeSelf, true);
+  assert.equal(screen.freeze.canvasGroup.alpha, F(0.7));
+  assert.equal(v.view.videoCG.alpha, 0);
+  await steps(t.loop, 1);                                                 // stopped: started again at frame 10, speed 2
+  assert.equal(video.isPlaying(), true);
+  assert.equal(video.speed, 2);
+  assert.equal(video.seekFrame, 10);
+  assert.equal(video.maxFrameDrop, 3);
+  assert.equal(v.seekRespeeding, true);
+  await steps(t.loop, 2);                                                 // playing, then another frame: 4 frames on
+  assert.equal(v.seekRespeeding, false);
+  assert.equal(v.seekRespeedAdvancedFrames, 4);
+  assert.equal(video.displayedFrameNo(), 16);                             // 2 more in that tick's update
+  assert.equal(v.view.videoCG.alpha, 1);
+  assert.equal(screen.freeze.activeSelf, true);
+  await steps(t.loop, 2);                                                 // two frames later the copy goes
+  assert.equal(screen.freeze.activeSelf, false);
+  assert.equal(screen.freeze.canvasGroup.alpha, 0);
+  assert.equal(v.respeedSessionActive, false);
+  // a clip without audio takes a speed at once
+  const t2 = makePlayer([{ cmd: "Clip", VideoID: 11 }]);
+  await installStoryFeatures(t2.ctx, t2.p);
+  const plain = await playClip(t2, 11);
+  setSpeed(t2, 15);
+  assert.equal(plain.speed, 1.5);
+  assert.equal(storyVideo(t2.ctx).seekRespeeding, false);
+  assert.deepEqual([...t.p.errors, ...t2.p.errors], []);
+  disposeStoryFeatures(t.ctx); disposeStoryFeatures(t2.ctx);
+});
+
+test("seek re-speed: a change while one runs loops once more, then the requested rerun runs; a pause marks it for resume", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 13 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const v = storyVideo(t.ctx), video = await playClip(t, 13);
+  let stops = 0;
+  const stopForSeek = video.stopForSeek.bind(video);
+  video.stopForSeek = () => { stops++; stopForSeek(); };
+  await steps(t.loop, 5);
+  setSpeed(t, 20);
+  await steps(t.loop, 1);
+  setSpeed(t, 15);                                                        // during the first: a rerun request
+  assert.equal(v.respeedRerunRequested, true);
+  await steps(t.loop, 20);
+  // the first loop saw the speed change and ran again at 1.5; the rerun then ran once more at the same speed
+  assert.equal(stops, 3);
+  assert.equal(video.speed, 1.5);
+  assert.equal(v.seekRespeeding, false);
+  assert.equal(v.respeedSessionActive, false);
+  assert.equal(v.respeedRerunRequested, false);
+  // the player paused: nothing runs, the video is marked for a re-speed on resume
+  t.p.isPause = true;
+  setSpeed(t, 10);
+  assert.equal(v.respeedPendingOnResume, true);
+  assert.equal(v.seekRespeeding, false);
+  assert.equal(video.speed, 1.5);
+  assert.deepEqual(t.p.errors, []);
+  disposeStoryFeatures(t.ctx);
+});
+
+test("seek re-speed: the Movie row waits while its video re-speeds; the playback's stop ends a re-speed", async () => {
+  const t = makePlayer([{ cmd: "Movie", VideoID: 13 }], { auto: false });
+  await installStoryFeatures(t.ctx, t.p);
+  const v = storyVideo(t.ctx);
+  const run = cmd(t, { cmd: "Movie", VideoID: 13, i: 0 });
+  let done = false; run.then(() => { done = true; });
+  await steps(t.loop, 10);
+  setSpeed(t, 20);
+  await steps(t.loop, 3);
+  assert.equal(done, false);                                              // not ended by the stop for the seek
+  assert.equal(v.seekRespeedAdvancedFrames, 4);
+  // 10 + 4 frames shown, 31 left at speed 2: 16 more ticks (the last ends it)
+  const n = await settle(t.loop, run);
+  assert.ok(n >= 15 && n <= 17, `${n}`);
+  // a stop of the playback during a re-speed: the flags and the overlay cleared, no rerun
+  const t2 = makePlayer([{ cmd: "Clip", VideoID: 13 }]);
+  await installStoryFeatures(t2.ctx, t2.p);
+  const v2 = storyVideo(t2.ctx), video = await playClip(t2, 13);
+  await steps(t2.loop, 4);
+  setSpeed(t2, 20);
+  setSpeed(t2, 15);
+  t2.p.cancelled = true;
+  await steps(t2.loop, 2);
+  assert.equal(v2.seekRespeeding, false);
+  assert.equal(v2.respeedSessionActive, false);
+  assert.equal(v2.view.screen.freeze.activeSelf, false);
+  assert.equal(v2.view.videoCG.alpha, 1);                                 // the mask restored in the finally part
+  assert.equal(video.isPlaying(), false);                                 // left stopped for the seek
+  assert.deepEqual([...t.p.errors, ...t2.p.errors], []);
+  disposeStoryFeatures(t.ctx); disposeStoryFeatures(t2.ctx);
+});
+
+test("seek re-speed: the delay helpers hold while it runs, then rescale and take off the real time of the frames it advanced", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 13 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const v = storyVideo(t.ctx);
+  await playClip(t, 13);
+  await steps(t.loop, 5);
+  const ends = {};
+  const f0 = t.loop.frameCount, watch = (name, pr) => pr.then((ok) => { ends[name] = [ok, t.loop.frameCount - f0]; });
+  watch("speed", delayWithSpeedAdjustment(t.p, 1));
+  watch("pause", delayWithPauseSpeedAdjustment(t.p, 1));
+  await steps(t.loop, 5);
+  setSpeed(t, 20);
+  await steps(t.loop, 30);
+  assert.equal(v.seekRespeedAdvancedFrames, 4);
+  // both: 6 ticks counted (the re-speed's first wait resumes after the delay's in that tick), held for the re-speed's
+  // three waits, then (1 - 6 dt) x 1/2 - 4 / 30 / 2 at dt per tick
+  const dt = F(t.loop.fixedDelta);
+  let r = F(1);
+  for (let i = 0; i < 6; i++) r = F(r - dt);
+  r = F(F(r * F(1 / 2)) - calcVideoRealDuration(t.p, 4));
+  let n = 9;
+  while (r > 0) { r = F(r - dt); n++; }
+  assert.equal(calcVideoRealDuration(t.p, 4), F(F(F(4) / F(30)) / F(2)));
+  assert.deepEqual(ends, { speed: [true, n], pause: [true, n] });
+  // without a re-speed the countdown is the plain one
+  const plain = makePlayer([]);
+  await installStoryFeatures(plain.ctx, plain.p);
+  let m = 0;
+  const d = delayWithSpeedAdjustment(plain.p, 0.5).then(() => { m = plain.loop.frameCount; });
+  await settle(plain.loop, d);
+  let q = F(0.5), k = 0;
+  while (q > 0) { q = F(q - dt); k++; }
+  assert.equal(m, k);
+  assert.equal(calcVideoRealDuration(plain.p, 4), 0);                     // no current video
+  assert.deepEqual(t.p.errors, []);
+  disposeStoryFeatures(t.ctx); disposeStoryFeatures(plain.ctx);
+});
+
+test("seek re-speed: the freeze overlay copies the last drawn frame, draws it at the group alpha and clears on a viewport change", async () => {
+  const t = makePlayer([{ cmd: "Clip", VideoID: 13 }]);
+  await installStoryFeatures(t.ctx, t.p);
+  const screen = storyVideo(t.ctx).view.screen, calls = [];
+  const gl = headlessGL({ onCall: (n, a) => calls.push([n, ...a]) });
+  screen.render({ gl: null, width: 64, height: 32 });                   // layout only (no drawing context)
+  assert.deepEqual(screen.screenCanvas.root.children.map((n) => n.name), ["Screen", "VideoSeekFreeze"]);
+  screen.target = new GLTarget(gl, 64, 32, { depth: true, label: "UIAdvWidget.VideoAndStill.RenderTexture" });
+  screen._cameraDrawn = true;
+  assert.equal(screen.tryShowVideoSeekFreeze(F(0.7)), true);
+  calls.length = 0;
+  screen._copyVideoSeekFreeze(gl);
+  const t0 = screen.freezeTarget;
+  assert.equal(t0.label, "UIAdvWidget.VideoSeekFreeze.RenderTexture");
+  assert.equal(t0.depth, undefined);
+  const blit = calls.find(([n]) => n === "blitFramebuffer");
+  assert.deepEqual(blit.slice(1), [0, 0, 64, 32, 0, 0, 64, 32, gl.COLOR_BUFFER_BIT, gl.NEAREST]);
+  assert.ok(calls.some(([n, target, fb]) => n === "bindFramebuffer" && target === gl.READ_FRAMEBUFFER && fb === screen.target.fb));
+  const [item] = screen._freezeItems();
+  assert.equal(item.glTex(), t0);
+  assert.equal(item.verts[6], F(0.7));                                    // vertex alpha: white x the group's 0.7
+  assert.deepEqual(Array.from(item.verts.slice(0, 2)), [0, 0]);           // the screen image's stretched rect
+  // a last draw without the camera's canvases: nothing to copy, nothing drawn
+  screen.clearVideoSeekFreeze();
+  screen._cameraDrawn = false;
+  screen.tryShowVideoSeekFreeze(F(0.7));
+  screen._copyVideoSeekFreeze(gl);
+  assert.deepEqual(screen._freezeItems(), []);
+  // a viewport change clears the overlay
+  screen.render({ gl: null, width: 64, height: 32 });
+  assert.equal(screen.freeze.activeSelf, true);
+  screen.render({ gl: null, width: 80, height: 32 });
+  assert.equal(screen.freeze.activeSelf, false);
+  screen.target = null; screen.freezeTarget = null;
   disposeStoryFeatures(t.ctx);
 });

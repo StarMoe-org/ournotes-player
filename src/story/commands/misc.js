@@ -1,6 +1,7 @@
 import { SOUND_CATEGORY, SOUND_CATEGORY_NAME } from "../../engine/audio.js";
 import { floatParam } from "../params.js";
 import { delayUntilVideoTimeline, storyVideo, videoTimelineActive } from "../features/video.js";
+import { videoSeekRespeeding, waitWhileVideoSeekRespeeding } from "../features/timing.js";
 
 // Small commands: Delay, Wait, CancelDelay, ForceAuto (script flow), SoundVolume (category volumes), Expression,
 // Costume, EyeBlink, Pause, Resume (character state).
@@ -36,7 +37,7 @@ const playbackDelay = (p, sec) => {
 //         if (Flow.IsClipVideoSkip) return                     (a Clip video being skipped to its marker)
 //         if (token cancelled) return
 //         if (Model.IsPause) { await UniTask.WaitWhile(() => Model.IsPause, Update); continue }
-//         (WaitWhileVideoSeekRespeedingAsync: no video seek re-speed runs in this player)
+//         (waited, remaining, previous) = await WaitWhileVideoSeekRespeedingAsync(remaining, previous); if (waited) continue
 //         speed = GetCurrentSpeedRate(); if (speed != previous) { remaining *= previous / speed; previous = speed }
 //         await UniTask.NextFrame(); remaining -= Time.deltaTime
 // Resolves false when the playback stopped, or when `alive` (another token linked in) turns false.
@@ -51,6 +52,12 @@ export const delayWithPauseSpeedAdjustment = async (p, duration, alive = null) =
     if (p.cancelled || (alive && !alive())) return false;
     if (p.isPause) {
       if (!await waitUntil(p, () => !p.isPause)) return false;
+      continue;
+    }
+    if (videoSeekRespeeding(p.ctx)) {
+      const w = await waitWhileVideoSeekRespeeding(p, remaining, previous, () => p.cancelled || (alive && !alive()));
+      if (!w) return false;
+      ({ remaining, previous } = w);
       continue;
     }
     const speed = F(p.speedRate());

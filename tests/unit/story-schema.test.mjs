@@ -1,7 +1,7 @@
 // The story schemas (schema/stor*.schema.json, episode.schema.json) and the story checks of scripts/validate-data.mjs
 // on a synthetic story site built here: two language groups, one cue sheet with a FLAC waveform, one glyph page per
-// language, a UI shader directory with the distance-field shader; variants with a host (an Overlay story) and with
-// chat window texts. No game data.
+// language, a UI shader directory with the distance-field shader; variants with a host (an Overlay story), with chat
+// window, dialog and frame texts, with a missing glyph and with an emoji sprite asset. No game data.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -195,6 +195,54 @@ const withDialog = (p) => {
   }
 };
 
+// frames.json with a frame whose prefab has a text node (and one without), a binding per language in frameTexts
+const withFrames = (p) => {
+  p.common["story.json"].frames = "frames.json";
+  p.common["frames.json"] = { frames: {
+    Comment: { nodes: [{ path: "Comment", components: [{ class: "AdvFrame" }] },
+                       { path: "Comment/Body", components: [{ type: "RectTransform" }, { class: "TextMeshProUGUI", m_text: "" }] }] },
+    Plain: { nodes: [{ path: "Plain", components: [{ class: "AdvFrame" }] }] } } };
+  for (const lang of ["ja", "en"]) {
+    const f = p.groups[lang]["ui/fonts.json"];
+    f.frameTexts = { Comment: { "Comment/Body": structuredClone(f.texts["W/Talk"]) } };
+  }
+};
+
+// the missing glyph: U+2661 and U+FE0F drawn as U+25A1, which the font asset holds
+const HEART = 0x2661, VS16 = 0xFE0F, SQUARE = 0x25A1;
+const withMissingGlyph = (p) => {
+  for (const lang of ["ja", "en"]) {
+    const f = p.groups[lang]["ui/fonts.json"], a = f.fonts["Test SDF"];
+    a.characters[SQUARE] = { glyph: 3, scale: 1, elementType: 1 };
+    a.missingGlyph = { unicode: SQUARE, characters: [HEART, VS16] };
+    f.coverage.missingGlyph = [HEART, VS16].map((u) => String.fromCodePoint(u));
+  }
+};
+
+// the emoji sprite asset: two sprites (one without an image), its page and sprite material, the talk text driven by
+// a UIText; the sprite shader in ui/shaders
+const SPRITE = "TextMeshPro/Sprite";
+const withSprites = (p) => {
+  Object.assign(p.common, shaderFiles("ui/shaders", [TMP, "UI/Default", SPRITE]));
+  const metrics = { m_Width: 4, m_Height: 4, m_HorizontalBearingX: 0, m_HorizontalBearingY: 4, m_HorizontalAdvance: 4 };
+  for (const lang of ["ja", "en"]) {
+    const f = p.groups[lang]["ui/fonts.json"], page = "sprite_Emoji";
+    f.spriteAssets = { Emoji: {
+      faceInfo: { m_PointSize: 0, m_Scale: 1, m_Baseline: 0, m_AscentLine: 0, m_DescentLine: 0 },
+      characters: [{ index: 3, unicode: 0x1F600, name: "1f600", glyph: 0, scale: 1 }, { index: 5, unicode: 0x2764, name: "2764", glyph: 1, scale: 1 }],
+      glyphs: { 0: { metrics, rect: { m_X: 1, m_Y: 1, m_Width: 4, m_Height: 4 }, scale: 1, atlasIndex: 0, packed: { texture: page, dx: 0, dy: 0 } },
+                1: { metrics, rect: { m_X: 0, m_Y: 0, m_Width: 0, m_Height: 0 }, scale: 1, atlasIndex: 0 } },
+      sequences: [{ name: "1f469-200d-1f4bb", unicode: 0 }], material: "Emoji Material", source: null, subset: "the sprites shown" } };
+    f.emojiSpriteAsset = "Emoji";
+    f.materials["Emoji Material"] = { material: "Emoji Material", shader: { shader: SPRITE }, keywords: [], textures: {}, floats: {}, colors: {} };
+    f.materialKeywords["Emoji Material"] = [];
+    f.textures[page] = { texture: `fonts/${page}.png`, name: page, width: 8, height: 8, mipCount: 1, settings: { m_FilterMode: 1, m_WrapU: 1, m_WrapV: 1 } };
+    p.groups[lang][`ui/fonts/${page}.png`] = png(8, 8);
+    f.coverage.sprites = { characters: 2, missing: ["2764"] };
+    Object.assign(f.texts["W/Talk"], { spriteAsset: "Emoji", m_tintAllSprites: 0 });
+  }
+};
+
 // ------------------------------------------------------------------------------------------------ tests
 test("the story schemas accept the synthetic documents", () => {
   const { dir, man } = buildSite();
@@ -314,4 +362,73 @@ test("dialog texts: a binding per text node of ui.json dialogs", () => {
   assert.equal(r.status, 0, r.lines.join(" | "));
   failsWith((p) => { withDialog(p); delete p.groups.en["ui/fonts.json"].dialogTexts; }, "[en] ui/fonts.json: dialog Skip: text Skip/Message has no binding in dialogTexts");
   failsWith((p) => { withDialog(p); p.groups.ja["ui/fonts.json"].dialogTexts.Skip["Skip/Other"] = p.groups.ja["ui/fonts.json"].texts["W/Talk"]; }, "dialogTexts.Skip.Skip/Other: not a text of ui/ui.json dialogs");
+});
+
+test("frame texts: a binding per text node of the frames with open fonts, none with game fonts", () => {
+  const r = validate(withFrames);
+  assert.equal(r.status, 0, r.lines.join(" | "));
+  assert.deepEqual(schema("story-fonts")(buildSiteFonts(withFrames)), []);
+  failsWith((p) => { withFrames(p); delete p.groups.ja["ui/fonts.json"].frameTexts; }, "[ja] ui/fonts.json: frame Comment: text Comment/Body has no binding in frameTexts");
+  failsWith((p) => { withFrames(p); p.groups.en["ui/fonts.json"].frameTexts.Plain = { "Plain": p.groups.en["ui/fonts.json"].texts["W/Talk"] }; }, "[en] ui/fonts.json: frameTexts.Plain.Plain: not a text of frames.json frames");
+  failsWith((p) => { withFrames(p); p.groups.en["ui/fonts.json"].frameTexts.Comment["Comment/Body"].localized.fontAsset = "Gone SDF"; }, "frameTexts.Comment.Comment/Body: font asset Gone SDF not in fonts");
+  failsWith((p) => { withFrames(p); p.common["story.json"].frames = null; delete p.common["frames.json"]; }, "frameTexts.Comment.Comment/Body: not a text of frames.json frames");
+  const game = (p) => {
+    withFrames(p);
+    p.man.fonts = "game";
+    for (const lang of ["ja", "en"]) { p.groups[lang]["ui/fonts.json"].source = "game"; p.groups[lang]["ui/languages.json"].fonts = "game"; }
+  };
+  failsWith(game, "[ja] ui/fonts.json: frameTexts in game-font data");
+  assert.equal(validate((p) => { game(p); for (const lang of ["ja", "en"]) delete p.groups[lang]["ui/fonts.json"].frameTexts; }).status, 0);
+});
+
+test("missing glyph: characters the font assets lack, drawn as a character the asset holds", () => {
+  const r = validate(withMissingGlyph);
+  assert.equal(r.status, 0, r.lines.join(" | "));
+  const doc = buildSiteFonts(withMissingGlyph);
+  assert.deepEqual(schema("story-fonts")(doc), []);
+  const a = doc.fonts["Test SDF"];
+  assert.ok(schema("story-fonts")({ ...doc, fonts: { "Test SDF": { ...a, missingGlyph: { ...a.missingGlyph, extra: 1 } } } }).some((e) => e.includes("missingGlyph")));
+  assert.ok(schema("story-fonts")({ ...doc, fonts: { "Test SDF": { ...a, missingGlyph: { unicode: SQUARE, characters: [] } } } }).some((e) => e.includes("missingGlyph/characters")));
+  const edit = (fn) => (p) => { withMissingGlyph(p); fn(p.groups.ja["ui/fonts.json"]); };
+  failsWith(edit((f) => { f.fonts["Test SDF"].missingGlyph.characters = [0x48, HEART, VS16]; f.coverage.missingGlyph.unshift("H"); }),
+    "[ja] ui/fonts.json fonts.Test SDF: missingGlyph.characters U+0048 held by the asset or its fallbacks");
+  failsWith(edit((f) => { delete f.fonts["Test SDF"].characters[SQUARE]; }), "missingGlyph.unicode U+25A1 held by neither the asset nor its fallbacks");
+  failsWith(edit((f) => { f.fonts["Test SDF"].missingGlyph.characters.reverse(); }), "missingGlyph.characters not ascending");
+  failsWith(edit((f) => { delete f.coverage.missingGlyph; }), "coverage.missingGlyph [], the font assets' missingGlyph characters U+2661 U+FE0F");
+  // U+0003: synthesized, no asset holds it
+  assert.equal(validate(edit((f) => { f.fonts["Test SDF"].missingGlyph.unicode = 3; delete f.fonts["Test SDF"].characters[SQUARE]; })).status, 0);
+  // with the game's TMP settings: the first of the settings' character (0: U+25A1), U+0020, U+0003 the asset holds
+  const settings = (unicode, ch = 0) => edit((f) => { f.tmpSettings = { m_missingGlyphCharacter: ch }; f.fonts["Test SDF"].missingGlyph.unicode = unicode; });
+  assert.equal(validate(settings(SQUARE)).status, 0);
+  failsWith(settings(0x20), "missingGlyph.unicode U+0020, TextMeshPro draws U+25A1");
+  failsWith(settings(SQUARE, 0x20), "missingGlyph.unicode U+25A1, TextMeshPro draws U+0020");
+});
+
+test("sprite assets: the emoji sprite asset, its material, glyphs and pages, the texts that draw it", () => {
+  const r = validate(withSprites);
+  assert.equal(r.status, 0, r.lines.join(" | "));
+  const doc = buildSiteFonts(withSprites);
+  assert.deepEqual(schema("story-fonts")(doc), []);
+  const sa = doc.spriteAssets.Emoji;
+  assert.ok(schema("story-fonts")({ ...doc, spriteAssets: { Emoji: { ...sa, sequences: [{ name: "1f600", unicode: 0 }] } } }).some((e) => e.includes("sequences/0/name")));
+  assert.ok(schema("story-fonts")({ ...doc, spriteAssets: { Emoji: { ...sa, material: undefined } } }).some((e) => e.includes("material")));
+  const edit = (fn) => (p) => { withSprites(p); fn(p.groups.en["ui/fonts.json"]); };
+  const E = "[en] ui/fonts.json";
+  failsWith(edit((f) => { f.texts["W/Talk"].spriteAsset = "Nope"; }), `${E}: texts.W/Talk: sprite asset Nope not in spriteAssets`);
+  failsWith(edit((f) => { f.spriteAssets.Other = f.spriteAssets.Emoji; f.texts["W/Talk"].spriteAsset = "Other"; f.coverage.sprites.characters = 4; }),
+    `${E}: texts.W/Talk: sprite asset Other, emojiSpriteAsset Emoji`);
+  failsWith(edit((f) => { delete f.texts["W/Talk"].m_tintAllSprites; }), `${E}: texts.W/Talk: a sprite asset without m_tintAllSprites`);
+  failsWith(edit((f) => { f.emojiSpriteAsset = "Other"; }), `${E}: emojiSpriteAsset Other not in spriteAssets`);
+  failsWith(edit((f) => { f.materials["Emoji Material"].shader.shader = TMP; }), `${E} spriteAssets.Emoji: material Emoji Material: shader ${TMP}, not ${SPRITE}`);
+  failsWith(edit((f) => { f.spriteAssets.Emoji.characters[0].glyph = 9; }), `${E} spriteAssets.Emoji: character 1f600: glyph 9 not in glyphs`);
+  failsWith(edit((f) => { f.spriteAssets.Emoji.characters.reverse(); }), `${E} spriteAssets.Emoji: characters not in the order of their index`);
+  failsWith(edit((f) => { f.spriteAssets.Emoji.glyphs[0].rect.m_X = 6; }), `${E} spriteAssets.Emoji: glyph 0: rect + offset leaves page sprite_Emoji (8x8)`);
+  failsWith(edit((f) => { f.spriteAssets.Emoji.glyphs[1].rect.m_Width = 2; f.spriteAssets.Emoji.glyphs[1].rect.m_Height = 2; }), `${E} spriteAssets.Emoji: glyph 1: a rect without packed texels`);
+  failsWith(edit((f) => { f.coverage.sprites.characters = 3; }), `${E}: coverage.sprites.characters 3, the sprite assets hold 2`);
+  failsWith(edit((f) => { f.coverage.sprites.missing = ["1f600"]; }), `${E}: coverage.sprites.missing: 1f600 has an image`);
+  failsWith(edit((f) => { f.coverage.sprites.missing = ["263a"]; }), `${E}: coverage.sprites.missing: 263a is not a sprite character`);
+  failsWith(edit((f) => { delete f.coverage.sprites; }), `${E}: spriteAssets without coverage.sprites`);
+  const bare = (f) => { delete f.spriteAssets; delete f.emojiSpriteAsset; delete f.coverage.sprites; };
+  failsWith(edit((f) => { bare(f); }), `${E}: W/Talk: a sprite asset without spriteAssets`);
+  failsWith(edit((f) => { bare(f); delete f.texts["W/Talk"].spriteAsset; f.emojiSpriteAsset = "Emoji"; }), `${E}: emojiSpriteAsset without spriteAssets`);
 });

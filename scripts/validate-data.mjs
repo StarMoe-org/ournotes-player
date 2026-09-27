@@ -22,10 +22,9 @@
 // story.json, episode.json, the required commands against the episode's rows and the player settings, the cue sheets
 // (cues.json, waveform files and their FLAC / MP4 headers), the Live2D models (moc3 header, prefab, textures, shader
 // variants), both shader directories, texture descriptors, and per language ui/ui.json, ui/languages.json and
-// ui/fonts.json (text bindings, the dialog and chat window bindings, font assets, glyph pages, text material
-// shaders). An
-// Overlay story built with open fonts: its host (host/host.json and, per language, ui/simple/ui.json with
-// ui/simple/fonts.json). A story id is the manifest path below stories/ without .json (`10462`, `tw/10462`).
+// ui/fonts.json (text bindings, the dialog, chat window and frame bindings, font assets and their missing glyph, sprite
+// assets, glyph pages, text material shaders). An Overlay story built with open fonts: its host (host/host.json and,
+// per language, ui/simple/ui.json with ui/simple/fonts.json). A story id is the manifest path below stories/ without .json (`10462`, `tw/10462`).
 // Prints the failures and a summary; exits 1 when a chart, a model or a story fails. No dependencies.
 
 import crypto from "node:crypto";
@@ -556,6 +555,23 @@ class Model extends Chart {
 const STORY_LANGUAGES = { ja: [0, "japanese"], en: [1, "english"], "zh-Hant": [2, "traditionalChinese"],
   "zh-Hans": [3, "simplifiedChinese"], ko: [4, "korean"] };
 const STORY_MEDIA = ["frames", "effects", "postEffects", "stills", "talkWindows", "chat", "videos"];
+const TMP_TEXT_CLASSES = new Set(["TextMeshProUGUI", "RubyTextMeshProUGUI", "RubyEmojiTextMeshProUGUI"]);
+const TMP_SPRITE_SHADER = "TextMeshPro/Sprite";
+// TMP_Text.SetArraySizes: TMP_Settings.missingGlyphCharacter 0 is U+25A1; without it U+0020, then U+0003 (a control
+// character TextMeshPro synthesizes: no font asset needs to hold it)
+const TMP_MISSING_GLYPH = 0x25A1, TMP_SPACE = 0x20, TMP_END_OF_TEXT = 0x03;
+const hexU = (u) => `U+${u.toString(16).toUpperCase().padStart(4, "0")}`;
+// the text nodes of frames.json: frame name -> {node path: node} of the nodes with a TextMeshPro component (frames
+// without one left out)
+const frameTextNodes = (doc) => {
+  const out = {};
+  for (const [name, rec] of Object.entries(isObj(doc) && isObj(doc.frames) ? doc.frames : {})) {
+    const nodes = isObj(rec) && Array.isArray(rec.nodes) ? rec.nodes : [];
+    const texts = nodes.filter((n) => isObj(n) && Array.isArray(n.components) && n.components.some((c) => isObj(c) && TMP_TEXT_CLASSES.has(c.class)));
+    if (texts.length) out[name] = Object.fromEntries(texts.map((n) => [n.path, n]));
+  }
+  return out;
+};
 const WAVE_EXT = { aac: "m4a", flac: "flac" };
 // JSON text with object keys sorted (comparison independent of key order)
 const canon = (v) => JSON.stringify(v, (k, x) => (isObj(x) ? Object.fromEntries(Object.keys(x).sort().map((y) => [y, x[y]])) : x));
@@ -723,9 +739,11 @@ class Story extends Chart {
       }
     }
     this.descriptors(scene, "");
+    this.frameTexts = {};
     for (const k of STORY_MEDIA) if (story[k] !== null && k !== "videos") {
       const v = this.doc(story[k]);
       if (v) this.descriptors(v, "");
+      if (v && k === "frames") this.frameTexts = frameTextNodes(v);
     }
     if (this.has("ui/shaders/shaders.json")) this.checkShaders("ui/shaders");
     else this.err("ui/shaders/shaders.json", "not in the manifest");
@@ -867,14 +885,17 @@ class Story extends Chart {
     for (const [role, r] of Object.entries(lj.roles)) if (!has(fj.fonts, r.fontAsset)) this.err("ui/languages.json", `roles.${role}: font asset ${r.fontAsset} not in ui/fonts.json`);
 
     this.checkFonts("ui/fonts.json", fj, ui, story.ui, "ui", lang, shaderOf);
-    // the dialog and chat window texts: with open fonts a binding per text node of ui.json dialogs (fonts.json
-    // dialogTexts) and per text of ui.json chatTexts (fonts.json chatTexts)
+    // the dialog, chat window and frame texts: with open fonts a binding per text node of ui.json dialogs (fonts.json
+    // dialogTexts), per text of ui.json chatTexts (fonts.json chatTexts) and per text node of the frames of
+    // frames.json (fonts.json frameTexts)
     const F = "ui/fonts.json";
     const dialogs = {};
     for (const [d, rec] of Object.entries(isObj(ui.dialogs) ? ui.dialogs : {}))
       dialogs[d] = Object.fromEntries((Array.isArray(rec.nodes) ? rec.nodes : []).filter((n) => has(n, "textStyle")).map((n) => [n.path, n]));
-    const groups = [["dialogTexts", "dialog", dialogs, "dialogs"], ["chatTexts", "chat window", isObj(ui.chatTexts) ? ui.chatTexts : {}, "chatTexts"]];
-    for (const [key, what, wanted, uiKey] of groups) {
+    const groups = [["dialogTexts", "dialog", dialogs, `${story.ui} dialogs`],
+                    ["chatTexts", "chat window", isObj(ui.chatTexts) ? ui.chatTexts : {}, `${story.ui} chatTexts`],
+                    ["frameTexts", "frame", this.frameTexts || {}, `${story.frames || "frames.json"} frames`]];
+    for (const [key, what, wanted, source] of groups) {
       if (m.fonts !== "open") {
         if (has(fj, key)) this.err(F, `${key} in ${m.fonts}-font data`);
         continue;
@@ -882,7 +903,7 @@ class Story extends Chart {
       const bound = isObj(fj[key]) ? fj[key] : {};
       for (const [w, texts] of Object.entries(wanted)) for (const p of Object.keys(texts)) if (!has(bound[w], p)) this.err(F, `${what} ${w}: text ${p} has no binding in ${key}`);
       for (const [w, texts] of Object.entries(bound)) for (const [p, t] of Object.entries(texts)) {
-        if (!has(wanted[w], p)) this.err(F, `${key}.${w}.${p}: not a text of ${story.ui} ${uiKey}`);
+        if (!has(wanted[w], p)) this.err(F, `${key}.${w}.${p}: not a text of ${source}`);
         this.binding(F, `${key}.${w}.${p}`, t, fj);
       }
     }
@@ -899,11 +920,51 @@ class Story extends Chart {
     this.checkFonts("ui/simple/fonts.json", fj, ui, U, dirOf(U), lang, shaderOf);
   }
 
-  // a text binding's localized font asset and material are in the fonts document
+  // a text binding's localized font asset and material are in the fonts document; its sprite asset (a text a UIText
+  // drives) is the emoji sprite asset, with m_tintAllSprites
   binding(F, where, t, fj) {
     if (!isObj(t) || !isObj(t.localized)) { this.err(F, `${where}: no localized record`); return; }
     if (!has(fj.fonts, t.localized.fontAsset)) this.err(F, `${where}: font asset ${t.localized.fontAsset} not in fonts`);
     if (!has(fj.materials, t.localized.material)) this.err(F, `${where}: material ${t.localized.material} not in materials`);
+    if (!has(t, "spriteAsset")) return;
+    if (!has(fj.spriteAssets, t.spriteAsset)) this.err(F, `${where}: sprite asset ${t.spriteAsset} not in spriteAssets`);
+    else if (t.spriteAsset !== fj.emojiSpriteAsset) this.err(F, `${where}: sprite asset ${t.spriteAsset}, emojiSpriteAsset ${fj.emojiSpriteAsset}`);
+    if (!has(t, "m_tintAllSprites")) this.err(F, `${where}: a sprite asset without m_tintAllSprites`);
+  }
+
+  // glyph records (font or sprite asset) against the glyph pages: a rect with texels has `packed`, whose page is in
+  // `textures`, and the rect + offset lies inside the page; at most 5 errors per asset
+  glyphPages(where, glyphs, textures) {
+    let bad = 0;
+    for (const [gi, g] of Object.entries(glyphs)) {
+      if (!has(g, "packed")) {
+        if (g.rect.m_Width > 0 && g.rect.m_Height > 0 && bad++ < 5) this.err(where, `glyph ${gi}: a rect without packed texels`);
+        continue;
+      }
+      const t = textures[g.packed.texture];
+      if (!t) { if (bad++ < 5) this.err(where, `glyph ${gi}: page ${g.packed.texture} not in textures`); continue; }
+      const x = g.rect.m_X + g.packed.dx, y = g.rect.m_Y + g.packed.dy;
+      if (x < 0 || y < 0 || x + g.rect.m_Width > t.width || y + g.rect.m_Height > t.height)
+        if (bad++ < 5) this.err(where, `glyph ${gi}: rect + offset leaves page ${g.packed.texture} (${t.width}x${t.height})`);
+    }
+  }
+
+  // a font asset's missingGlyph: `characters` ascending, held neither by the asset nor by its fallbacks; `unicode`
+  // held by the asset or a fallback (U+0003 is synthesized); with the game's TMP settings, `unicode` is the first of
+  // the settings' missing glyph character, U+0020 and U+0003 that the asset or a fallback holds
+  missingGlyph(where, f, fj) {
+    const { unicode, characters } = f.missingGlyph;
+    const chain = [f, ...f.fallbacks.map((n) => fj.fonts[n]).filter(isObj)];
+    const holds = (u) => u === TMP_END_OF_TEXT || chain.some((a) => has(a.characters, String(u)));
+    if (characters.some((u, i) => i > 0 && u <= characters[i - 1])) this.err(where, "missingGlyph.characters not ascending");
+    const held = characters.filter(holds);
+    if (held.length) this.err(where, `missingGlyph.characters ${held.slice(0, 5).map(hexU).join(" ")} held by the asset or its fallbacks`);
+    if (!holds(unicode)) this.err(where, `missingGlyph.unicode ${hexU(unicode)} held by neither the asset nor its fallbacks`);
+    const tmp = fj.tmpSettings;
+    if (isObj(tmp) && Number.isInteger(tmp.m_missingGlyphCharacter)) {
+      const want = [tmp.m_missingGlyphCharacter || TMP_MISSING_GLYPH, TMP_SPACE, TMP_END_OF_TEXT].find(holds);
+      if (unicode !== want) this.err(where, `missingGlyph.unicode ${hexU(unicode)}, TextMeshPro draws ${hexU(want)}`);
+    }
   }
 
   // a fonts document F (ui/fonts.json, ui/simple/fonts.json) of the UI document `ui` (path U, texture paths relative
@@ -932,17 +993,45 @@ class Story extends Chart {
       for (const fb of f.fallbacks) if (!has(fj.fonts, fb)) this.err(where, `fallback ${fb} not in fonts`);
       let bad = 0;
       for (const [u, c] of Object.entries(f.characters)) if (!has(f.glyphs, String(c.glyph)) && bad++ < 5) this.err(where, `character ${u}: glyph ${c.glyph} not in glyphs`);
-      for (const [gi, g] of Object.entries(f.glyphs)) {
-        if (!has(g, "packed")) {
-          if (g.rect.m_Width > 0 && g.rect.m_Height > 0 && bad++ < 5) this.err(where, `glyph ${gi}: a rect without packed texels`);
-          continue;
-        }
-        const t = fj.textures[g.packed.texture];
-        if (!t) { if (bad++ < 5) this.err(where, `glyph ${gi}: page ${g.packed.texture} not in textures`); continue; }
-        const x = g.rect.m_X + g.packed.dx, y = g.rect.m_Y + g.packed.dy;
-        if (x < 0 || y < 0 || x + g.rect.m_Width > t.width || y + g.rect.m_Height > t.height)
-          if (bad++ < 5) this.err(where, `glyph ${gi}: rect + offset leaves page ${g.packed.texture} (${t.width}x${t.height})`);
+      this.glyphPages(where, f.glyphs, fj.textures);
+      if (has(f, "missingGlyph")) this.missingGlyph(where, f, fj);
+    }
+    // coverage.missingGlyph: the characters of the font assets' missingGlyph, ascending (absent without any)
+    const substituted = [...new Set(Object.values(fj.fonts).flatMap((f) => (isObj(f.missingGlyph) ? f.missingGlyph.characters : [])))].sort((a, b) => a - b);
+    const covered = has(fj.coverage, "missingGlyph") ? fj.coverage.missingGlyph : [];
+    if (!sameJson(covered, substituted.map((u) => String.fromCodePoint(u))))
+      this.err(F, `coverage.missingGlyph ${JSON.stringify(covered)}, the font assets' missingGlyph characters ${substituted.map(hexU).join(" ") || "none"}`);
+    // sprite assets: emojiSpriteAsset one of them; each with its sprite material, characters in table order and on
+    // glyphs, glyph pages; coverage.sprites with them: the characters held and the sprites without an image
+    const sprites = isObj(fj.spriteAssets) ? fj.spriteAssets : null;
+    if (sprites && !has(sprites, fj.emojiSpriteAsset)) this.err(F, `emojiSpriteAsset ${fj.emojiSpriteAsset} not in spriteAssets`);
+    if (!sprites && has(fj, "emojiSpriteAsset")) this.err(F, "emojiSpriteAsset without spriteAssets");
+    if (!!sprites !== has(fj.coverage, "sprites")) this.err(F, sprites ? "spriteAssets without coverage.sprites" : "coverage.sprites without spriteAssets");
+    for (const [name, sa] of Object.entries(sprites || {})) {
+      const where = `${F} spriteAssets.${name}`;
+      const mat = fj.materials[sa.material];
+      if (!mat) this.err(where, `material ${sa.material} not in materials`);
+      else if (mat.shader.shader !== TMP_SPRITE_SHADER) this.err(where, `material ${sa.material}: shader ${mat.shader.shader}, not ${TMP_SPRITE_SHADER}`);
+      if (sa.characters.some((c, i) => i > 0 && c.index <= sa.characters[i - 1].index)) this.err(where, "characters not in the order of their index");
+      let bad = 0;
+      for (const c of sa.characters) if (!has(sa.glyphs, String(c.glyph)) && bad++ < 5) this.err(where, `character ${c.name}: glyph ${c.glyph} not in glyphs`);
+      this.glyphPages(where, sa.glyphs, fj.textures);
+    }
+    if (sprites && isObj(fj.coverage.sprites)) {
+      const all = Object.values(sprites).flatMap((sa) => sa.characters.map((c) => [c, sa.glyphs[String(c.glyph)]]));
+      const cs = fj.coverage.sprites;
+      if (cs.characters !== all.length) this.err(F, `coverage.sprites.characters ${cs.characters}, the sprite assets hold ${all.length}`);
+      for (const n of cs.missing) {
+        const hit = all.filter(([c]) => c.name === n);
+        if (!hit.length) this.err(F, `coverage.sprites.missing: ${n} is not a sprite character`);
+        else if (hit.some(([, g]) => isObj(g) && has(g, "packed"))) this.err(F, `coverage.sprites.missing: ${n} has an image`);
       }
+    }
+    // without sprite assets no binding has one (binding() checks the name otherwise)
+    if (!sprites) {
+      const groups = [fj.texts, ...["dialogTexts", "chatTexts", "frameTexts"].flatMap((k) => Object.values(isObj(fj[k]) ? fj[k] : {}))];
+      const hit = groups.flatMap((g) => Object.entries(g)).find(([, t]) => has(t, "spriteAsset"));
+      if (hit) this.err(F, `${hit[0]}: a sprite asset without spriteAssets`);
     }
   }
 }

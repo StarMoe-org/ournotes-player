@@ -135,8 +135,8 @@ const isSeparator = (u16) => /\p{Z}/u.test(String.fromCharCode(u16));
 // digits, '.', then an optional unit 'px' / 'em' / '%'), a colour (#...) or a string (quotes stripped). A tag TMP does
 // not know is no tag: its characters are text. Tags TMP knows but this port does not implement raise.
 const TAGS_IMPLEMENTED = new Set(["color", "/color", "size", "/size", "voffset", "/voffset", "cspace", "/cspace",
-  "align", "/align", "b", "/b", "nobr", "/nobr", "space", "pos", "rotate", "/rotate", "mark", "/mark"]);
-const TAGS_KNOWN = new Set(["i", "u", "s", "sub", "sup", "font", "material", "sprite", "link", "indent",
+  "align", "/align", "b", "/b", "nobr", "/nobr", "space", "pos", "rotate", "/rotate", "mark", "/mark", "u", "/u"]);
+const TAGS_KNOWN = new Set(["i", "s", "sub", "sup", "font", "material", "sprite", "link", "indent",
   "line-indent", "line-height", "margin", "margin-left", "margin-right", "mspace", "width", "allcaps", "uppercase",
   "lowercase", "smallcaps", "gradient", "style", "noparse", "page", "action", "a", "font-weight", "alpha",
   "strikethrough", "underline", "zwsp", "zwj", "nbsp", "shy", "cr", "table", "tr", "th", "td", "dir"]);
@@ -237,6 +237,10 @@ export const tmpTokens = (text, { richText = true, parseCtrl = false, sprites = 
           // <mark> attributes (color=, padding=) are outside the implemented subset
           if (key === "mark" && /\s\S/.test(body.slice(4)))
             throw new UIError(`rich text tag <${body}> (mark attributes) not implemented`);
+          // <u> with a value or attributes (<u color=...>)
+          if (key === "u" && body.length > 1) throw new UIError(`rich text tag <${body}> (underline attributes) not implemented`);
+          // <color=...> that is neither a hex colour nor a colour name TMP knows: no tag
+          if (key === "color" && !tagColor(tag, body)) { out.push({ c: ch.codePointAt(0) }); continue; }
           if (TAGS_IMPLEMENTED.has(key)) { out.push({ tag, body }); i = j; continue; }
           if (TAGS_KNOWN.has(key.replace(/^\//, ""))) throw new UIError(`rich text tag <${body}> not implemented`);
         }
@@ -273,6 +277,24 @@ export const tmpMarkColor = (h) => {
   return [v(1), v(3), v(5), h.length === 9 ? v(7) : 255];
 };
 
+// ValidateHtmlTag <color=name> / <color="name">: the value's hash (tmpHashCode: case-insensitive; a quoted value
+// without its quotes, an unquoted one up to the '>') against the ten names TMP knows, opaque; any other name: null
+const NAMED_COLORS = new Map(Object.entries({
+  red: [255, 0, 0, 255], lightblue: [173, 216, 230, 255], blue: [0, 0, 255, 255], grey: [128, 128, 128, 255],
+  black: [0, 0, 0, 255], green: [0, 255, 0, 255], white: [255, 255, 255, 255], orange: [255, 128, 0, 255],
+  purple: [160, 32, 240, 255], yellow: [255, 235, 4, 255],
+}).map(([n, c]) => [tmpHashCode(n), c]));
+const namedColor = (body) => {
+  let v = body.slice(body.indexOf("=") + 1);
+  if (v[0] === "\"") { const end = v.indexOf("\"", 1); v = v.slice(1, end < 0 ? v.length : end); }
+  return NAMED_COLORS.get(tmpHashCode(v)) || null;
+};
+// the colour of a <color> tag (parseTag record, body): hex (tmpHexColor) or a name, else null (no tag)
+const tagColor = (tag, body) => {
+  const v = tag.value;
+  return v && v.kind === "color" ? tmpHexColor(v.text) : v && v.kind === "string" ? namedColor(body) : null;
+};
+
 // The rich-text features of `text` this port cannot lay out (tag bodies, in order); [] when it can
 export const tmpUnsupported = (text, opts) => {
   try { tmpTokens(text, opts); return []; } catch (e) {
@@ -284,15 +306,17 @@ export const tmpUnsupported = (text, opts) => {
 // Style state of the tag stacks (GenerateTextMesh: m_currentFontSize / m_sizeStack, m_htmlColor / m_colorStack,
 // m_FontStyleInternal / m_fontStyleStack, m_baselineOffset, m_cSpacing, m_lineJustification / m_lineJustificationStack,
 // m_isNonBreakingSpace, m_FXMatrix, m_HighlightState / m_HighlightStateStack: default (m_htmlColor, no padding);
-// markCount = the Highlight count of the font style stack).
+// markCount = the Highlight count of the font style stack; m_underlineColor / m_underlineColorStack (default
+// m_htmlColor), ulCount = the Underline count of the font style stack).
 const HIGHLIGHT_ZERO = Object.freeze({ l: 0, r: 0, t: 0, b: 0 });
 const styleState = (fontSize, color, bold, align) => ({
   size: fontSize, sizeStack: [fontSize], color, colorStack: [color], boldCount: 0, baseBold: bold,
   baselineOffset: 0, cSpacing: 0, align, alignStack: [align], nobr: false, rotate: null,
   markCount: 0, hlState: { color: [255, 255, 255, 255], pad: HIGHLIGHT_ZERO }, hlStack: [{ color, pad: HIGHLIGHT_ZERO }],
+  ulCount: 0, ulColor: color, ulStack: [color],
 });
 const cloneStyle = (s) => ({ ...s, sizeStack: [...s.sizeStack], colorStack: [...s.colorStack], alignStack: [...s.alignStack],
-                             hlStack: [...s.hlStack] });
+                             hlStack: [...s.hlStack], ulStack: [...s.ulStack] });
 // HighlightState ==: the colour bytes and the four padding floats
 const sameHighlight = (a, b) => a === b || (a.color.every((v, k) => v === b.color[k]) &&
   a.pad.l === b.pad.l && a.pad.r === b.pad.r && a.pad.t === b.pad.t && a.pad.b === b.pad.b);
@@ -319,6 +343,25 @@ export const tmpSpriteAsset = (rec) => {
   }
   return s;
 };
+
+// The missing glyph of a font asset record: its `missingGlyph` {unicode, characters: [code points]} as {unicode,
+// characters: Set}, or null without one
+const missingGlyphs = new WeakMap();
+const tmpMissingGlyph = (f) => {
+  if (!f.missingGlyph) return null;
+  let m = missingGlyphs.get(f);
+  if (!m) {
+    const { unicode, characters } = f.missingGlyph;
+    if (!Number.isInteger(unicode) || !Array.isArray(characters)) throw new UIError(`${f.name}: missingGlyph malformed`);
+    m = { unicode, characters: new Set(characters) };
+    missingGlyphs.set(f, m);
+  }
+  return m;
+};
+
+// U+FE00..U+FE0F, U+E0100..U+E01EF (SetArraySizes: next >> 4 == 0xFE0 or next - 0xE0100 < 0xF0)
+const isVariationSelector = (u) => u >> 4 === 0xFE0 || (u >= 0xE0100 && u < 0xE01F0);
+const hex4 = (u) => u.toString(16).toUpperCase().padStart(4, "0");
 
 // style padding of a sprite: none, no bold spacing (GenerateTextMesh sprite branch)
 const SPRITE_PADDING = Object.freeze({ P: 0, SP: 0, boldSpacing: 0 });
@@ -417,17 +460,28 @@ export class TMPText {
   setText(s) {
     if (s === this.text) return;
     this.text = s;
-    this.tokens = tmpTokens(s, this.tokenOptions());
-    this.elements = this._elements(this.tokens);
+    ({ tokens: this.tokens, elements: this.elements } = this._resolve(tmpTokens(s, this.tokenOptions())));
     this.dirty = true;
   }
 
   // the tmpTokens options of this text
   tokenOptions() { return { richText: this.richText, parseCtrl: this.parseCtrl, sprites: this.spriteAsset }; }
 
-  // the text elements of the character tokens: glyphOf, a tag's sprite as it is
-  _elements(tokens) {
-    return tokens.filter((k) => k.c !== undefined).map((k) => ({ u: k.c, ...(k.sprite ? this._sprite(k.sprite) : this.glyphOf(k.c)) }));
+  // SetArraySizes over the tokens -> {tokens, elements}: the text element of each character token (glyphOf, a tag's
+  // sprite as it is). A variation selector right after a character found as a font character (a glyph, a synthesized
+  // or substituted character; not a sprite, not a tag) is rewritten to U+001A, which GenerateTextMesh skips: its token
+  // is dropped. The glyph variants a font's variation sequences give are not implemented (the data leaves them out).
+  _resolve(tokens) {
+    const out = [], elements = [];
+    let afterFontCharacter = false;
+    for (const k of tokens) {
+      if (k.c === undefined) { out.push(k); afterFontCharacter = false; continue; }
+      if (afterFontCharacter && isVariationSelector(k.c)) { afterFontCharacter = false; continue; }
+      const e = { u: k.c, ...(k.sprite ? this._sprite(k.sprite) : this.glyphOf(k.c)) };
+      out.push(k); elements.push(e);
+      afterFontCharacter = !e.sprite;
+    }
+    return { tokens: out, elements };
   }
 
   _sprite(sc) {
@@ -451,8 +505,26 @@ export class TMPText {
 
   // SetArraySizes character lookup: the text's font asset (fallback fonts are resolved by the data: every character
   // a text shows through a font is in its asset), then the text's sprite asset by code point
-  // (GetSpriteCharacterFromSpriteAsset). -> {g: glyph record, charScale, index: glyph index, sprite?: the sprite asset}
+  // (GetSpriteCharacterFromSpriteAsset), then the missing glyph: a code point of the font asset's `missingGlyph`
+  // characters (the ones the game's font assets lack) becomes its substitute `unicode` (TMP_Settings.missingGlyphCharacter,
+  // else U+0020, else U+0003, as the game's fonts have it), looked up in the font asset alone. Any other code point
+  // raises. -> {g: glyph record, charScale, index: glyph index, sprite?: the sprite asset, u?: the substitute}
   glyphOf(u) {
+    const f = this.font, e = this._fontGlyph(u);
+    if (e) return e;
+    const sc = this.spriteAsset && this.spriteAsset.byUnicode.get(u);
+    if (sc) return this._sprite(sc);
+    const mg = tmpMissingGlyph(f);
+    if (mg && mg.characters.has(u)) {
+      const s = this._fontGlyph(mg.unicode);
+      if (!s) throw new UIError(`${f.name}: missing glyph character U+${hex4(mg.unicode)} not in the font data`);
+      return { ...s, u: mg.unicode };
+    }
+    throw new UIError(`${f.name}: U+${u.toString(16).toUpperCase()} not in the font data`);
+  }
+
+  // the font asset's character of `u` (a synthesized control character the asset lacks: TMP's zero glyph) or null
+  _fontGlyph(u) {
     const f = this.font, c = f.characters[String(u)];
     if (c) {
       const g = f.glyphs[String(c.glyph)];
@@ -460,9 +532,7 @@ export class TMPText {
       return { g, charScale: c.scale, index: c.glyph };
     }
     if (TMP_SYNTHESIZED.has(u)) return { g: TMP_ZERO_GLYPH, charScale: 1, index: 0 };
-    const sc = this.spriteAsset && this.spriteAsset.byUnicode.get(u);
-    if (sc) return this._sprite(sc);
-    throw new UIError(`${f.name}: U+${u.toString(16).toUpperCase()} not in the font data`);
+    return null;
   }
 
   // One rich-text tag on the style state s (ValidateHtmlTag, the tags this port implements). `at` = the layout
@@ -473,11 +543,8 @@ export class TMPText {
     const num = () => (value && value.kind === "number" ? tmpConvertToFloat(value.text) : null);
     switch (name) {
       case "color": {
-        const c = value && value.kind === "color" ? tmpHexColor(value.text) : null;
-        if (!c) {
-          if (value && value.kind === "string") throw new UIError(`${this.node.path}: named colour <${tok.body}> not implemented`);
-          return false;
-        }
+        const c = tagColor(tok.tag, tok.body);
+        if (!c) return false;
         s.color = c; s.colorStack.push(c); return true;
       }
       case "/color": if (s.colorStack.length > 1) s.colorStack.pop(); s.color = s.colorStack[s.colorStack.length - 1]; return true;
@@ -547,6 +614,15 @@ export class TMPText {
         if (s.hlStack.length > 1) s.hlStack.pop();
         s.hlState = s.hlStack[s.hlStack.length - 1];
         if (s.markCount > 0) s.markCount--;
+        return true;
+      // <u>: Underline style on; the underline colour is the html colour at the tag (a later <color> does not change
+      // it), pushed. </u> (the base style has no Underline): off when its count reaches 0; the colour below becomes
+      // current (one pop).
+      case "u": s.ulCount++; s.ulColor = s.color; s.ulStack.push(s.color); return true;
+      case "/u":
+        if (s.ulCount > 0) s.ulCount--;
+        if (s.ulStack.length > 1) s.ulStack.pop();
+        s.ulColor = s.ulStack[s.ulStack.length - 1];
         return true;
     }
     throw new UIError(`${this.node.path}: rich text tag <${tok.body}> not implemented`);
@@ -646,8 +722,7 @@ export class TMPText {
   // TMP_Text.GetPreferredValues(string).x: the preferred width of `s` with this text's settings (SetTextInternal: the
   // string is parsed without the text preprocessor; the text shown is not changed)
   preferredWidthOf(s) {
-    const tokens = tmpTokens(s, this.tokenOptions());
-    const elements = this._elements(tokens);
+    const { tokens, elements } = this._resolve(tmpTokens(s, this.tokenOptions()));
     return this._preferredValues(tokens, elements, TMP_LARGE, false, TMP_WRAP.NoWrap, this._marginWidth()).x;
   }
 
@@ -833,7 +908,7 @@ export class TMPText {
   // GenerateTextMesh repeats until the point size is set. Results: this.chars (per character: visible, line, quad
   // corners, uvs, colour, xScale), this.lines, this.anchor, this.renderedFontSize.
   generate() {
-    this.chars = []; this.lines = []; this.highlights = []; this.dirty = false;
+    this.chars = []; this.lines = []; this.highlights = []; this.underlines = []; this.dirty = false;
     if (!this.elements.length) return;
     let fontSize = this.fontSize, as = null;
     if (this.autoSize) {
@@ -987,7 +1062,8 @@ export class TMPText {
       const c = { u, g: e.g, sprite: e.sprite || null, scale, P, SP, bold, x0, y0, x1, y1, corners, lineNumber: L.lineNumber,
                   visible: false, color: null,
                   baselineY: F(F(faceBaseline - L.lineOffset) + bo), origin: L.xAdvance,
-                  hl: st.markCount > 0 ? st.hlState : null, rotated: st.rotate !== null, kern: adj.xAdvance };
+                  hl: st.markCount > 0 ? st.hlState : null, rotated: st.rotate !== null, kern: adj.xAdvance,
+                  underline: st.ulCount > 0, ulColor: st.ulColor };
       chars[cc] = c;
       // ascender / descender in line space (a sprite's: no small caps division)
       const elementAscender = sp ? F(F(scale * sp.ascender) + bo) : F(F(fi.m_AscentLine * scale) + bo);
@@ -1209,7 +1285,100 @@ export class TMPText {
       c.xScale = c.bold ? -c.scale : c.scale;
     }
     this.highlights = chars.some((c) => c.hl) ? this._highlights(chars, lines) : [];
+    this.underlines = chars.some((c) => c.underline) ? this._underlines(chars, lines) : [];
     return null;
+  }
+
+  // GenerateTextMesh phase II, the Underline style (after the offsets), per character in order. xScale is the SDF scale
+  // of the last visible glyph so far (bold negative; sprites and invisible characters keep it). Per character with
+  // Underline: visible = index <= maxVisibleCharacters and line <= maxVisibleLines; a character other than whitespace
+  // and U+200B grows maxScale (its scale) and xScaleMax (|xScale|) and lowers the underline baseline to its baseline +
+  // maxScale x the primary font asset's underline offset. A run starts at a visible character up to its line's last
+  // visible character that is no line feed / carriage return (nor a separator at that last position): its scale, x =
+  // bottomLeft.x, y = the baseline so far, its underline colour (maxScale 0 then: its scale and xScale). A run ends (to
+  // topRight.x, at the baseline then) at a single-character text, its line's last character or last visible character
+  // (a whitespace / U+200B there ends it at the line's last visible character), a hidden character (at the one
+  // before), a different underline colour of the next character, or the first character without Underline (at the one
+  // before); maxScale, xScaleMax and the baseline start over after each run.
+  // -> [{at (the character index of the call), x0, y0 (start), x1, y1 (end), startScale, endScale, maxScale, sdfScale,
+  // color}] (DrawUnderlineMesh calls, in order)
+  _underlines(chars, lines) {
+    const out = [], total = chars.length, offset = this.font.faceInfo.m_UnderlineOffset;
+    let begin = false, maxScale = 0, xScaleMax = 0, baseLine = TMP_LARGE, xScale = 0;
+    let start = null, startScale = 0, color = null;
+    const draw = (i, e) => {
+      out.push({ at: i, x0: start.x, y0: start.y, x1: F(e.x1 + e.offset.x), y1: baseLine, startScale, endScale: e.scale,
+                 maxScale, sdfScale: xScaleMax, color });
+      begin = false; maxScale = 0; xScaleMax = 0; baseLine = TMP_LARGE;
+    };
+    for (const [i, c] of chars.entries()) {
+      if ((c.visible || c.hiddenByMaxVisible) && !c.sprite) xScale = c.bold ? -c.scale : c.scale;
+      if (!c.underline) {
+        if (begin) draw(i, chars[i - 1]);
+        continue;
+      }
+      if (c.rotated) throw new UIError(`${this.node.path}: underline of rotated characters not implemented`);
+      const ln = lines[c.lineNumber], u16 = c.u & 0xFFFF, ws = isWhiteSpace(u16) || u16 === 0x200B;
+      const visible = !(i > this.maxVisibleCharacters || c.lineNumber > this.maxVisibleLines);
+      if (!ws) {
+        maxScale = c.scale > maxScale ? c.scale : maxScale;
+        xScaleMax = Math.abs(xScale) > xScaleMax ? Math.abs(xScale) : xScaleMax;
+        const v = F(c.baselineY + F(maxScale * offset));
+        baseLine = v < baseLine ? v : baseLine;
+      }
+      if (!begin) {
+        if (!visible || i > ln.lastVisible || u16 === 10 || u16 === 11 || u16 === 13) continue;
+        if (i === ln.lastVisible && isSeparator(u16)) continue;
+        begin = true; startScale = c.scale;
+        if (maxScale === 0) { maxScale = startScale; xScaleMax = xScale; }
+        start = { x: F(c.x0 + c.offset.x), y: baseLine }; color = c.ulColor;
+      }
+      if (total === 1) draw(i, c);
+      else if (i === ln.last || i >= ln.lastVisible) draw(i, ws ? chars[ln.lastVisible] : c);
+      else if (!visible) draw(i, chars[i - 1]);
+      else if (i < total - 1 && !chars[i + 1].ulColor.every((v, k) => v === color[k])) draw(i, c);
+    }
+    return out;
+  }
+
+  // DrawUnderlineMesh: three quads (start cap, middle, end cap) of one run r with the '_' glyph of the primary font
+  // asset (no fallback): y = min(start y, end y); thickness = that asset's underline thickness; segment width = half
+  // the glyph width x maxScale, or half the run when the run is shorter than the glyph width x maxScale; the text's
+  // material padding around it, and for the caps' uvs x startScale / maxScale and endScale / maxScale. uv0 = (u, v, 0,
+  // |sdfScale|) over the glyph rect in its page (the caps: its left and right half, the middle a sliver at its centre);
+  // uv1 = the vertex x along the run over the run width, 0 / 1; colour (r, g, b, min(its alpha, the font colour's)).
+  // -> the 12 vertices
+  _underlineVerts(r, texture) {
+    const f = this.font, g = this._underlineGlyph(texture), pk = g.packed, gr = g.rect;
+    const page = f.textureSize[pk.texture], W = page.width, H = page.height;
+    const pad = this.padding, thick = f.faceInfo.m_UnderlineThickness, ms = r.maxScale;
+    const y = r.y1 <= r.y0 ? r.y1 : r.y0, w = F(r.x1 - r.x0), gw = g.metrics.m_Width;
+    const segW = F(gw * ms) <= w ? F(F(gw * 0.5) * ms) : F(w * 0.5);
+    const top = F(y + F(pad * ms)), bottom = F(y - F(F(thick + pad) * ms));
+    const xa = r.x0, xb = F(r.x0 + segW), xc = F(r.x1 - segW), xd = r.x1;
+    const sp = F(F(pad * r.startScale) / ms), ep = F(F(pad * r.endScale) / ms);
+    const rx = gr.m_X + pk.dx, ry = gr.m_Y + pk.dy, half = gr.m_Width / 2;
+    const u0 = F(F(rx - sp) / W), u2 = F(F(F(rx - sp) + half) / W), u4 = F(F(F(ep + rx) + half) / W);
+    const u6 = F(F(F(ep + rx) + gr.m_Width) / W), um = F(u2 * F(0.001));
+    const vB = F(F(ry - pad) / H), vT = F(F(pad + (gr.m_Height + ry)) / H);
+    const al = (x) => F(F(x - r.x0) / w), ab = al(xb), ac = al(xc);
+    const a = r.color[3] <= this.fontColor32[3] ? r.color[3] : this.fontColor32[3];
+    const c = [r.color[0], r.color[1], r.color[2], a], sdf = Math.abs(r.sdfScale);
+    const v = (x, yy, u, vv, u1, v1) => ({ x, y: yy, c, u, v: vv, w: sdf, u1, v1 });
+    return [v(xa, bottom, u0, vB, 0, 0), v(xa, top, u0, vT, 0, 1), v(xb, top, u2, vT, ab, 1), v(xb, bottom, u2, vB, ab, 0),
+            v(xb, bottom, F(u2 - um), vB, ab, 0), v(xb, top, F(u2 - um), vT, ab, 1), v(xc, top, F(u2 + um), vT, ac, 1),
+            v(xc, bottom, F(u2 + um), vB, ac, 0),
+            v(xc, bottom, u4, vB, ac, 0), v(xc, top, u4, vT, ac, 1), v(xd, top, u6, vT, 1, 1), v(xd, bottom, u6, vB, 1, 0)];
+  }
+
+  // the '_' glyph of the primary font asset (GetUnderlineSpecialCharacter: no fallback), on the page of material 0
+  _underlineGlyph(texture, what = "underline") {
+    const f = this.font, ch = f.characters["95"];
+    if (!ch) throw new UIError(`${f.name}: U+005F (the ${what} glyph) not in the font data`);
+    const g = f.glyphs[String(ch.glyph)], pk = g && g.packed;
+    if (!pk || (texture && pk.texture !== texture) || (g.atlasIndex || 0) !== 0)
+      throw new UIError(`${f.name}: ${what} glyph outside the first atlas page not implemented`);
+    return g;
   }
 
   // GenerateTextMesh phase II, the Highlight style (after the offsets): per character with Highlight, visible = index
@@ -1221,10 +1390,12 @@ export class TMPText {
   // character without Highlight. -> [{x0, y0, x1, y1, color}] (DrawTextHighlight calls, in order)
   _highlights(chars, lines) {
     const out = [], total = chars.length;
-    const draw = (s, e, color) => out.push({ x0: s.x, y0: s.y, x1: e.x, y1: e.y, color });
+    let at = 0;
+    const draw = (s, e, color) => out.push({ at, x0: s.x, y0: s.y, x1: e.x, y1: e.y, color });
     let begin = false, start = null, end = null, hs = null;
     for (const [i, c] of chars.entries()) {
       const ln = lines[c.lineNumber], u16 = c.u & 0xFFFF;
+      at = i;
       if (!c.hl) {
         if (begin) { begin = false; draw(start, end, hs.color); }
         continue;
@@ -1255,28 +1426,29 @@ export class TMPText {
     return out;
   }
 
-  // DrawTextHighlight quads: BL, TL, TR, BR of the run; uv0 = the centre of the primary font asset's underline
-  // character '_' (no fallback) +- one texel, w 0; uv1 (0, 1); colour (r, g, b, min(font colour alpha, a)); into the
-  // mesh of material 0 after its glyph quads. The atlas pages are repacked: the centre is taken in the page that holds
-  // '_', which must be the page of material 0.
-  _highlightVerts(texture) {
-    const f = this.font, ch = f.characters["95"];
-    if (!ch) throw new UIError(`${f.name}: U+005F (the highlight glyph) not in the font data`);
-    const g = f.glyphs[String(ch.glyph)], pk = g && g.packed;
-    if (!pk || (texture && pk.texture !== texture) || (g.atlasIndex || 0) !== 0)
-      throw new UIError(`${f.name}: highlight glyph outside the first atlas page not implemented`);
+  // DrawTextHighlight quad of one run h: BL, TL, TR, BR; uv0 = the centre of the primary font asset's underline
+  // character '_' (no fallback) +- one texel, w 0; uv1 (0, 1); colour (r, g, b, min(font colour alpha, a)). The atlas
+  // pages are repacked: the centre is taken in the page that holds '_', which must be the page of material 0.
+  _highlightVerts(h, texture) {
+    const f = this.font, g = this._underlineGlyph(texture, "highlight"), pk = g.packed;
     const page = f.textureSize[pk.texture], r = g.rect, W = page.width, H = page.height;
     const cu = F(F(F(r.m_X + r.m_Width / 2) + pk.dx) / W), cv = F(F(F(r.m_Y + r.m_Height / 2) + pk.dy) / H);
     const tx = F(1 / W), ty = F(1 / H);
-    const verts = [];
-    for (const h of this.highlights) {
-      const c = [h.color[0], h.color[1], h.color[2], Math.min(this.fontColor32[3], h.color[3])];
-      verts.push({ x: h.x0, y: h.y0, c, u: F(cu - tx), v: F(cv - ty), w: 0, u1: 0, v1: 1 },
-                 { x: h.x0, y: h.y1, c, u: F(cu - tx), v: F(ty + cv), w: 0, u1: 0, v1: 1 },
-                 { x: h.x1, y: h.y1, c, u: F(tx + cu), v: F(ty + cv), w: 0, u1: 0, v1: 1 },
-                 { x: h.x1, y: h.y0, c, u: F(tx + cu), v: F(cv - ty), w: 0, u1: 0, v1: 1 });
-    }
-    return { verts, texture: pk.texture };
+    const c = [h.color[0], h.color[1], h.color[2], Math.min(this.fontColor32[3], h.color[3])];
+    return [{ x: h.x0, y: h.y0, c, u: F(cu - tx), v: F(cv - ty), w: 0, u1: 0, v1: 1 },
+            { x: h.x0, y: h.y1, c, u: F(cu - tx), v: F(ty + cv), w: 0, u1: 0, v1: 1 },
+            { x: h.x1, y: h.y1, c, u: F(tx + cu), v: F(ty + cv), w: 0, u1: 0, v1: 1 },
+            { x: h.x1, y: h.y0, c, u: F(tx + cu), v: F(cv - ty), w: 0, u1: 0, v1: 1 }];
+  }
+
+  // The decoration quads of material 0, after its glyph quads, in the order GenerateTextMesh writes them at
+  // last_vert_index: per character, the underline run that ends there, then the highlight runs drawn there.
+  // -> {verts, texture (the page of '_')}
+  _decorationVerts(texture) {
+    const d = [...this.underlines.map((x) => ({ at: x.at, k: 0, x })), ...this.highlights.map((x) => ({ at: x.at, k: 1, x }))];
+    d.sort((a, b) => a.at - b.at || a.k - b.k);
+    const verts = d.flatMap(({ k, x }) => (k === 0 ? this._underlineVerts(x, texture) : this._highlightVerts(x, texture)));
+    return { verts, texture: this._underlineGlyph(texture, d[0].k === 0 ? "underline" : "highlight").packed.texture };
   }
 
   // TextMeshProUGUI mesh: quads BL, TL, TR, BR (FillCharacterVertexBuffers), triangles 0,1,2 / 2,3,0, uv0 = (u, v, 0,
@@ -1316,8 +1488,8 @@ export class TMPText {
       }
       let texture = chars.length ? chars[0].texture : null;
       if (chars.some((c) => c.texture !== texture)) throw new UIError(`${this.node.path}: glyphs of one page group span textures`);
-      if (!out.length && this.highlights.length) {    // material 0: the highlight quads after the glyphs
-        const h = this._highlightVerts(texture);
+      if (!out.length && (this.highlights.length || this.underlines.length)) {   // material 0: then the decorations
+        const h = this._decorationVerts(texture);
         texture = h.texture;
         for (let s = verts.length, k = 0; k < h.verts.length; k += 4, s += 4) idx.push(s, s + 1, s + 2, s + 2, s + 3, s);
         verts.push(...h.verts);

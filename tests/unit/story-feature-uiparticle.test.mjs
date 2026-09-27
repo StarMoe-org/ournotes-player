@@ -9,6 +9,7 @@ import { UI_STRIDE } from "../../src/engine/ugui.js";
 import { commandHandler, createStoryUILayers } from "../../src/story/interfaces.js";
 import { disposeStoryFeatures, installStoryFeatures } from "../../src/story/features/index.js";
 import { frameView } from "../../src/story/features/frame.js";
+import { featureState } from "../../src/story/features/state.js";
 
 const flush = () => new Promise((res) => setImmediate(res));
 const settle = async (loop, promise, max = 400) => {
@@ -238,4 +239,18 @@ test("UIParticle: aligned World-space lines under a turned, flattened node are d
   // 0.2 x 20 particle units, times the node scale 10: 2 wide, 200 tall on the canvas
   assert.ok(Math.abs(w - 2) < 1e-2 && Math.abs(h - 200) < 1e-2, `${w} x ${h}`);
   disposeStoryFeatures(t.ctx);
+});
+
+test("UIParticle: the systems draw from a stream of their own, not the scripts' UnityEngine.Random", async () => {
+  const random = ps({ extra: { InitialModule: { ...ps().InitialModule, startSpeed: { minMaxState: 3, minScalar: 0, scalar: 2 } } } });
+  const t = await setup(frame([{ type: "CanvasRenderer" }, uip(), random, psr()]));
+  const shared = featureState(t.ctx).random, before = [shared.x, shared.y, shared.z, shared.w];
+  await t.show();
+  for (let i = 0; i < 5; i++) await t.draw();
+  assert.equal((await t.draw()).length, 1);
+  assert.deepEqual([shared.x, shared.y, shared.z, shared.w], before);      // untouched by the particles
+  assert.notEqual(t.f.particles.entries[0].system.sharedRng, shared);
+  disposeStoryFeatures(t.ctx);
+  // a UIParticle group id range would draw Random.Range at OnEnable: refused
+  await assert.rejects(setup(frame([uip({ m_GroupMaxId: 3 }), ps(), psr()])), /group id range/);
 });

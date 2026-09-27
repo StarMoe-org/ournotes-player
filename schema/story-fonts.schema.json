@@ -31,12 +31,36 @@
         "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "$ref": "#/$defs/text" }
       }
     },
+    "frameTexts": {
+      "description": "Open fonts: frame name (frames.json frames) -> text node path (in its frame prefab) -> text binding.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "$ref": "#/$defs/text" }
+      }
+    },
+    "spriteAssets": {
+      "description": "Sprite asset name -> TextMeshPro sprite asset reduced to the sprites the episode's texts can draw.",
+      "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "$ref": "#/$defs/spriteAsset" }
+    },
+    "emojiSpriteAsset": {
+      "description": "With spriteAssets: the key of the sprite asset LocalizeManager.EmojiSpriteAsset is.",
+      "type": "string", "minLength": 1
+    },
     "coverage": {
       "type": "object",
       "required": ["characters", "missing"],
       "properties": {
         "characters": { "type": "integer", "minimum": 0 },
         "missing": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "missingGlyph": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "sprites": {
+          "type": "object",
+          "required": ["characters", "missing"],
+          "properties": {
+            "characters": { "type": "integer", "minimum": 0 },
+            "missing": { "type": "array", "items": { "type": "string" } }
+          }
+        },
         "underline": {
           "type": "object",
           "required": ["font", "character", "inAsset"],
@@ -209,6 +233,16 @@
           "propertyNames": { "pattern": "^[0-9]+$" },
           "additionalProperties": { "$ref": "#/$defs/character" }
         },
+        "missingGlyph": {
+          "description": "The code points the game's font asset lacks with its fallbacks (ascending) and the character TextMeshPro draws for them.",
+          "type": "object",
+          "required": ["unicode", "characters"],
+          "additionalProperties": false,
+          "properties": {
+            "unicode": { "type": "integer", "minimum": 0 },
+            "characters": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } }
+          }
+        },
         "glyphs": {
           "type": "object",
           "propertyNames": { "pattern": "^[0-9]+$" },
@@ -218,6 +252,56 @@
         "runtimeGlyphs": { "type": ["object", "null"] },
         "sourceFont": { "type": ["object", "null"] },
         "source": { "$ref": "#/$defs/source" },
+        "subset": { "type": "string" }
+      }
+    },
+    "spriteAsset": {
+      "type": "object",
+      "required": ["faceInfo", "characters", "glyphs", "sequences", "material"],
+      "properties": {
+        "faceInfo": {
+          "type": "object",
+          "required": ["m_PointSize", "m_Scale", "m_Baseline", "m_AscentLine", "m_DescentLine"],
+          "properties": {
+            "m_PointSize": { "type": "number", "minimum": 0 },
+            "m_Scale": { "$ref": "#/$defs/num" },
+            "m_Baseline": { "$ref": "#/$defs/num" },
+            "m_AscentLine": { "$ref": "#/$defs/num" },
+            "m_DescentLine": { "$ref": "#/$defs/num" }
+          }
+        },
+        "characters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["index", "unicode", "name", "glyph", "scale"],
+            "properties": {
+              "index": { "type": "integer", "minimum": 0 },
+              "unicode": { "type": "integer", "minimum": 0 },
+              "name": { "type": "string" },
+              "glyph": { "type": "integer", "minimum": 0 },
+              "scale": { "$ref": "#/$defs/num" }
+            }
+          }
+        },
+        "glyphs": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[0-9]+$" },
+          "additionalProperties": { "$ref": "#/$defs/glyph" }
+        },
+        "sequences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "unicode"],
+            "properties": {
+              "name": { "type": "string", "pattern": "-" },
+              "unicode": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "material": { "type": "string", "minLength": 1 },
+        "source": { "anyOf": [{ "$ref": "#/$defs/source" }, { "type": "null" }] },
         "subset": { "type": "string" }
       }
     },
@@ -278,6 +362,8 @@
         "m_fontSize": { "type": "number" },
         "m_text": { "type": "string" },
         "m_monospaceDistEm": { "type": "number" },
+        "spriteAsset": { "type": "string", "minLength": 1 },
+        "m_tintAllSprites": { "type": ["integer", "boolean"] },
         "ruby": {
           "type": "object",
           "required": ["_rubyVerticalOffset", "_rubyScale", "_rubyLineHeight", "_rubyShowType", "_rubyMargin"],

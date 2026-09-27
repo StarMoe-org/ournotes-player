@@ -447,9 +447,10 @@ assets (`game`).
 | `texts` | object | Text node path (as in `ui/ui.json` `nodes`) → the node's text binding (below). Every text node of `ui/ui.json`. |
 | `dialogTexts` | object | Optional, open fonts: dialog name → text node path → text binding, one per text node of `ui/ui.json` `dialogs`. Game-font data has no dialog bindings. |
 | `chatTexts` | object | Optional, open fonts and an episode with chat windows: window name → text node path → text binding, one per text of `ui/ui.json` `chatTexts`. A text without `LocalizeText` keeps its serialized font asset, material and line spacing in `localized`. Game-font data has no chat bindings. |
+| `frameTexts` | object | Optional, open fonts and an episode whose frames have text nodes: frame name (a key of the story's `frames.json` `frames`) → text node path → text binding, one per node of the frame's prefab with a TextMeshPro text component (`TextMeshProUGUI`, `RubyTextMeshProUGUI`, `RubyEmojiTextMeshProUGUI`). A text without `LocalizeText` keeps its serialized font asset, material and line spacing in `localized`. Game-font data has no frame bindings. |
 | `spriteAssets` | object | Optional: sprite asset name → [sprite asset](#sprite-assets), present when the episode's texts draw sprites (the game's emoji sprite asset). |
 | `emojiSpriteAsset` | string | With `spriteAssets`: the sprite asset `LocalizeManager.EmojiSpriteAsset` is (a key of `spriteAssets`): the one a `UIText` gives its text, and the one `TmpTextHelper.CombineEmojiSequences` reads for a text without a sprite asset. |
-| `coverage` | object | `characters` (distinct characters shown), `missing` (characters no font asset of the chain has, as strings; drawn as TextMeshPro draws a missing character; not the characters a sprite draws), with sprites `sprites` (`characters`: the sprite characters held, `missing`: the names of those without an image), and producer details. |
+| `coverage` | object | `characters` (distinct characters shown), `missing` (as strings, not the characters a sprite draws: with game fonts the characters no font asset of the chain has, which TextMeshPro draws as its missing glyph (`missingGlyph`); with open fonts the characters the game's font assets have and the font file lacks, which the player does not lay out: a text that shows one fails), `missingGlyph` (optional: the characters of the font assets' `missingGlyph`, as strings, ascending), with sprites `sprites` (`characters`: the sprite characters held, `missing`: the names of those without an image), and producer details. |
 | `tmpSettings` | object | Optional (game): the game's TMP Settings values (`m_missingGlyphCharacter`, …). |
 | `lineBreaking` | object | Optional: TextMeshPro's line breaking rules of the game's TMP Settings: `leading` and `following` (the text of its leading and following characters files, as stored) and `useModernHangulLineBreakingRules`. A layout that breaks a line next to a character of these sets needs it. |
 
@@ -485,6 +486,7 @@ A font asset is a TextMeshPro font asset reduced to the characters the episode s
 | `material` | The asset's default material (a key of `materials`). |
 | `fallbacks` | Names of the fallback font assets (keys of `fonts`), in search order. |
 | `characters` | Code point (decimal string) → `{ glyph, scale, elementType }`: the glyph index (a key of `glyphs`). |
+| `missingGlyph` | Optional: `{ unicode, characters }`: the code points of the episode's texts that the game's font asset lacks with its fallbacks (`characters`, ascending), which TextMeshPro draws as its missing glyph: the character `unicode`, `TMP_Settings.missingGlyphCharacter` (0: U+25A1) when the game's font asset or a fallback has it, else U+0020, else U+0003. The asset or one of its `fallbacks` holds `unicode` (open data: the asset itself), except U+0003, a control character TextMeshPro synthesizes; none of them holds a code point of `characters`. A text with a sprite asset draws those of them its sprite asset has as sprites. A variation selector (U+FE00–U+FE0F, U+E0100–U+E01EF) right after a character of a font asset is not drawn (TextMeshPro replaces it by U+001A, which it skips); after a sprite or a tag it is a character like any other. |
 | `glyphs` | Glyph index (decimal string) → `{ metrics, rect, scale, atlasIndex, packed, runtime }`: `metrics` (`m_Width`, `m_Height`, `m_HorizontalBearingX`, `m_HorizontalBearingY`, `m_HorizontalAdvance`, px at the point size), `rect` (`m_X`, `m_Y`, `m_Width`, `m_Height`, texels of the atlas, origin bottom left), `scale`, `atlasIndex` (page, or `null` for a glyph a dynamic asset adds at runtime), `packed` (`{ texture, dx, dy }`: the glyph page of `textures` holding the glyph's texels and the integer offset from `rect` to them; absent for an empty rect), `runtime` (optional, `true`: generated as a dynamic font asset adds it). |
 | `glyphPairAdjustmentRecords`, `glyphPairAdjustments` | The number of glyph pair adjustment records of the asset and, when it is not 0, the lookup reduced to the exported glyphs: key (`first | second << 16`) → `{ first, second, flags }` with value records `{ xPlacement, yPlacement, xAdvance, yAdvance }`. |
 | `runtimeCharacters`, `runtimeGlyphs` | Game data: the characters a dynamic asset generates at runtime and how (else `[]` and `null`). |
@@ -506,7 +508,9 @@ for its atlas.
 Open font assets (`source` `open`) hold the characters of the episode's text table, its title, the static labels of
 the UI, the chat windows' status texts, the serialized texts of the chat windows' text nodes (shown until a row sets
 them) and the texts the chat windows format at run time (battery percentages, member counts, read counts, the ellipsis
-of a shortened name). They keep TextMeshPro's scale relations: each takes the point
+of a shortened name) and the texts the frames that receive texts get at run time (`AdvFrameCommand.SetFrameTexts`:
+the texts of the Frame rows' `TargetTextIDs`, normalized to NFC, with `@` and line feeds). They keep TextMeshPro's
+scale relations: each takes the point
 size, padding and style settings of the game font asset the text uses in that language, its face info and glyph metrics come from the font
 file at that point size, and its materials are the game's text materials of that language with the page as
 `_MainTex`. A game asset of an anti-aliased distance-field render mode (`SDFAA`) gets a distance field of the same
@@ -613,10 +617,16 @@ Besides the charts and models, validates `stories.json` and every story (or the 
 - per language: `ui/ui.json` (node order), `ui/languages.json` and `ui/fonts.json` (schemas; `language` equal to the
   group's, `mode` and `field` those of the language; every text node of that language's `ui/ui.json` has a binding
   whose `localized` font asset and material exist, and every binding is a text node; with open fonts the same for
-  the text nodes of `dialogs` (`dialogTexts`) and the texts of `chatTexts`, with game fonts neither; fallbacks, material keys, `characters` →
-  `glyphs` references, glyph pages named by `packed` present in the group with their described size; every glyph's
-  `rect` + offset inside its page); with a `host`, `ui/simple/ui.json` and `ui/simple/fonts.json` checked the same
-  way;
+  the text nodes of `dialogs` (`dialogTexts`), the texts of `chatTexts` and the text nodes of the frames of
+  `frames.json` (`frameTexts`), with game fonts none of them; fallbacks, material keys, `characters` → `glyphs`
+  references, glyph pages named by `packed` present in the group with their described size; every glyph's `rect` +
+  offset inside its page; a font asset's `missingGlyph` as described above (with `tmpSettings`, also which character
+  `unicode` is) and `coverage.missingGlyph` equal to the characters of all of them; with `spriteAssets`:
+  `emojiSpriteAsset` one of them, each sprite asset's material of shader `TextMeshPro/Sprite`, its characters in index
+  order with their glyphs, its glyph pages as for font assets, `coverage.sprites` (the characters held, the missing
+  names those of sprites without an image), and the sprite asset of every binding that has one equal to
+  `emojiSpriteAsset`, with `m_tintAllSprites`; without `spriteAssets` no binding has one); with a `host`,
+  `ui/simple/ui.json` and `ui/simple/fonts.json` checked the same way;
 - the shader directories `shaders/` and `ui/shaders/` (index, parsed files, GLSL ES 3.00 blocks), that `ui/shaders/`
   has a variant for every UI and text material's `materialKeywords`, and that every PNG a texture descriptor of the
   scene, the media files or the UI names has the described size.

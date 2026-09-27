@@ -129,6 +129,12 @@ test("rich text: colour, size, voffset, cspace, align, bold", () => {
   const rot = make("<rotate=90>A");
   const [bl, tl] = rot.chars[0].corners;
   close(tl[1], bl[1], 1e-3);                                   // a quarter turn lays the left edge flat
+  // named colours: quoted or not, any case, opaque; an unknown name or a quoted hex value is no tag
+  assert.deepEqual(make("<color=\"blue\">A").chars[0].color, [0, 0, 255, 255]);
+  assert.deepEqual(make("<color=Yellow>A").chars[0].color, [255, 235, 4, 255]);
+  assert.deepEqual(make("<COLOR=\"LightBlue\">A</color>B").chars.map((c) => c.color), [[173, 216, 230, 255], [255, 255, 255, 255]]);
+  assert.equal(make("<color=cyan>A").chars.length, 13);
+  assert.equal(tmpTokens("<color=\"#FF0000\">A").length, 18);
 });
 
 test("tags TMP does not know are text; known tags outside the subset raise", () => {
@@ -137,7 +143,8 @@ test("tags TMP does not know are text; known tags outside the subset raise", () 
   assert.throws(() => make("<i>A"), /not implemented/);
   assert.throws(() => make("<mark=#FF000080 padding=1,1,1,1>A"), /mark attributes/);
   assert.deepEqual(tmpUnsupported("<size=150%>A"), []);
-  assert.equal(tmpUnsupported("<u>A</u>").length, 1);
+  assert.equal(tmpUnsupported("<u>A</u>").length, 0);
+  assert.equal(tmpUnsupported("<u color=#FF0000>A</u>").length, 1);
   assert.equal(tmpTokens("<color=#FFF>A").length, 2);
   assert.equal(tmpConvertToFloat("175"), 175);
   close(tmpConvertToFloat("-0.25"), -0.25, 1e-6);
@@ -319,6 +326,83 @@ test("sprites with a sprite face: its scale, baseline and lines", () => {
   assert.equal(e.scale, scale);
   assert.equal(e.ascender, F(scale * 30)); assert.equal(e.descender, F(scale * -8));
   assert.equal(e.y1, F(F(F(F(0.36) * 2) * 1.5) + F(F(28.8) * scale)), "the sprite face baseline, by the font scale");
+});
+
+test("missing glyph: the listed code points become the substitute; variation selectors after a font character are skipped", () => {
+  const mfont = { ...font, characters: { ...font.characters, 9633: font.characters["65"] },
+                  missingGlyph: { unicode: 0x25A1, characters: [0x2605, 0xFE0F, 0x1F600] } };
+  const sa = spriteAsset();
+  const h = { fontAsset: () => mfont, spriteAsset: () => sa, material: (n) => (n === "Emoji Material" ? { material: n } : material) };
+  const text = (s, over = {}) => {
+    const t = new TMPText(h, { path: "Test/Text", rect: { x: 0, y: -200, w: 1000, h: 200 } }, record(over));
+    t.setText(s); t.generate();
+    return t;
+  };
+  const a = text("A\u2605B");
+  assert.deepEqual(a.chars.map((c) => c.u), [0x41, 0x25A1, 0x42]);
+  assert.equal(a.chars[1].g, font.glyphs["1"]);
+  assert.deepEqual(text("A\uFE0FB").chars.map((c) => c.u), [0x41, 0x42], "after a glyph: rewritten to U+001A, skipped");
+  assert.deepEqual(text("\u2605\uFE0F").chars.map((c) => c.u), [0x25A1], "after a substituted character too");
+  assert.deepEqual(text("A<b>\uFE0F").chars.map((c) => c.u), [0x41, 0x25A1], "a tag in between: looked up");
+  // after a sprite the variation selector is looked up: the missing glyph
+  const s = text(`${EMOJI}\uFE0F`, { spriteAsset: "Emoji", m_tintAllSprites: 0 });
+  assert.equal(s.chars[0].sprite.name, "Emoji"); assert.equal(s.chars[1].u, 0x25A1);
+  assert.equal(text(EMOJI).chars[0].u, 0x25A1, "without a sprite asset: the missing glyph");
+  assert.throws(() => text("\u2606"), /U\+2606 not in the font data/, "an open font gap");
+  const nofont = { ...mfont, missingGlyph: { unicode: 0x25A0, characters: [0x2605] } };
+  assert.throws(() => new TMPText({ ...h, fontAsset: () => nofont }, { path: "T", rect: null }, record()).setText("\u2605"),
+                /missing glyph character U\+25A0/);
+  close(text("A\u2605").preferredWidth(), text("AA").preferredWidth(), 1e-6);
+});
+
+test("<u>: underline runs, colour at the tag, line ends, colour changes, three quads with the '_' glyph after the glyphs", () => {
+  const ufont = { ...font, faceInfo: { ...font.faceInfo, m_UnderlineOffset: -10, m_UnderlineThickness: 5 } };
+  const text = (s, over = {}, rect = { x: 0, y: -200, w: 1000, h: 200 }, max = null) => {
+    const t = new TMPText({ ...host, fontAsset: () => ufont }, { path: "Test/Text", rect }, record(over));
+    t.setText(s); if (max !== null) t.setMaxVisible(max); t.generate();
+    return t;
+  };
+  const a = text("<u>AB</u>C"), [A, B] = a.chars;
+  assert.equal(a.underlines.length, 1);
+  const [r] = a.underlines;
+  assert.equal(r.at, 2, "drawn at the first character without Underline");
+  close(r.x0, F(A.x0 + A.offset.x), 1e-6); close(r.x1, F(B.x1 + B.offset.x), 1e-6);
+  close(r.y0, F(A.baselineY + F(F(0.36) * -10)), 1e-6); assert.equal(r.y1, r.y0);
+  assert.deepEqual([r.startScale, r.endScale, r.maxScale, r.sdfScale], [A.scale, B.scale, A.scale, A.scale]);
+  assert.deepEqual(r.color, [255, 255, 255, 255]);
+  // the underline keeps the html colour of the <u> tag; a trailing space ends it at the last visible character
+  const b = text("<u><color=#0000FF>A </color></u>");
+  assert.deepEqual(b.chars[0].color, [0, 0, 255, 255]);
+  assert.deepEqual(b.underlines.map((x) => [x.at, x.color]), [[0, [255, 255, 255, 255]]]);   // at the last visible one
+  close(b.underlines[0].x1, F(b.chars[0].x1 + b.chars[0].offset.x), 1e-6);
+  // a different underline colour of the next character ends a run; one run per line of a wrapped text
+  assert.deepEqual(text("<u>A</u><color=#FF0000><u>B</u>").underlines.map((x) => [x.at, x.color[1]]), [[0, 255], [1, 0]]);
+  const w = text("<u>AAA AAA</u>", { m_TextWrappingMode: 1 }, { x: 0, y: -200, w: 120, h: 200 });
+  assert.equal(w.underlines.length, 2);
+  close(w.underlines[0].x1, F(w.chars[2].x1 + w.chars[2].offset.x), 1e-6);
+  // maxVisibleCharacters k: a run ends before the first character with index > k
+  const m = text("<u>ABCD", {}, undefined, 1);
+  assert.equal(m.underlines[0].at, 2); close(m.underlines[0].x1, F(m.chars[1].x1 + m.chars[1].offset.x), 1e-6);
+  // bold: |xScale|
+  assert.equal(text("<u><b>A</b>").underlines[0].sdfScale, F(0.36));
+  // mesh: 12 vertices after the glyphs of material 0; start cap, middle sliver, end cap of '_'
+  const [mesh] = a.meshes();
+  assert.equal(mesh.verts.length, 12 + 12);
+  const q = mesh.verts.slice(12), us = font.glyphs[font.characters["95"].glyph].rect;
+  const sc = F(0.36), y = r.y0, segW = F(F(50 * 0.5) * sc), wid = F(r.x1 - r.x0);
+  close(q[0].y, F(y - F(F(5 + 1.25) * sc)), 1e-6); close(q[1].y, F(y + F(1.25 * sc)), 1e-6);
+  close(q[2].x, F(r.x0 + segW), 1e-6); close(q[6].x, F(r.x1 - segW), 1e-6); close(q[10].x, r.x1, 1e-6);
+  close(q[0].u, F(F(us.m_X - 1.25) / 1024), 1e-7); close(q[2].u, F(F(F(us.m_X - 1.25) + 25) / 1024), 1e-7);
+  close(q[4].u, F(q[2].u - F(q[2].u * F(0.001))), 1e-7); close(q[10].u, F(F(F(1.25 + us.m_X) + 50) / 1024), 1e-7);
+  close(q[0].v, F(F(us.m_Y - 1.25) / 1024), 1e-7); close(q[1].v, F(F(1.25 + (us.m_Height + us.m_Y)) / 1024), 1e-7);
+  assert.deepEqual([q[0].w, q[0].u1, q[0].v1, q[1].v1, q[10].u1], [sc, 0, 0, 1, 1]);
+  close(q[2].u1, F(F(q[2].x - r.x0) / wid), 1e-7);
+  assert.deepEqual(q[5].c, [255, 255, 255, 255]);
+  assert.deepEqual(mesh.idx.slice(18, 24), [12, 13, 14, 14, 15, 12]);
+  // with a highlight ending at the same character: the underline first
+  const both = text("<mark=#FF000080><u>AB</u></mark>C").meshes()[0];
+  assert.equal(both.verts.length, 12 + 12 + 4);
+  assert.deepEqual(both.verts[24].c, [255, 0, 0, 128]); assert.deepEqual(both.verts[12].c, [255, 255, 255, 255]);
 });
 
 test("<mark>: highlight runs from the characters' bounds, colours, state changes, line ends, visibility", () => {

@@ -3,7 +3,7 @@ import { StoryCommandError } from "../interfaces.js";
 import { floatParam } from "../params.js";
 import { DTCancelled } from "../features/dotween-core.js";
 import { delayWithSpeedAdjustment, waitUntil } from "../features/timing.js";
-import { storyVideo } from "../features/video.js";
+import { approximately, storyVideo } from "../features/video.js";
 import { stopCurrentVoices } from "./talk.js";
 
 // Movie (AdvMovieCommand) and Clip (AdvClipCommand) with AdvVideoCommandHelper. Both are always awaited (IsNoWait,
@@ -63,9 +63,6 @@ export const stopVideo = async (p, duration, cancelled) => {
   v.prepareNext();
 };
 
-// Mathf.Approximately
-const approximately = (a, b) => Math.abs(b - a) < Math.max(1e-6 * Math.max(Math.abs(a), Math.abs(b)), 1.1210387714598537e-44);
-
 // AdvVideoCommandHelper.PrepareAudioVideoForSpeedAsync: Prepared 0, Aborted 1, Invalidated 2. At a speed other than 1
 // an audio video is stopped and prepared again at that speed (CRI applies a speed to such a movie on prepare).
 const prepareAudioVideoForSpeed = async (p, video, speed) => {
@@ -103,7 +100,7 @@ const playMovie = async (c, p, v, cancelled) => {
   } else video.play(p.speedRate());
   if (!aborted) {
     if (!await waitUntil(p, () => video.isPlaying())) return;
-    if (!await waitUntil(p, () => !video.isPlaying())) return;          // WaitWhile(IsPlaying || respeeding)
+    if (!await waitUntil(p, () => !(video.isPlaying() || v.seekRespeeding))) return;   // WaitWhile(IsPlaying || respeeding)
   }
   const out = p.calcDuration(floatParam(c.Parameter2), 0);
   if (out > 0) await v.view.hide(out, cancelled); else v.view.hideInternal();
