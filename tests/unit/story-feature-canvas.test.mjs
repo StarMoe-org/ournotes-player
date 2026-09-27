@@ -61,3 +61,31 @@ test("Quaternion.eulerAngles: Z X Y order in [0, 360), the poles with z = 0", ()
   const pole = eulerAngles(quatEuler(90, 30, 20));                         // x = 90: y - z folds into y
   assert.ok(near([pole.x, pole.z], [90, 0], 2e-3) && Math.abs(pole.y - 10) < 2e-3, `${pole.x} ${pole.y} ${pole.z}`);
 });
+
+test("Image Tiled: a trimmed sprite tiles at its full rect size with the uvs of its packed area", () => {
+  const canvas = new ScreenCanvas("C", { sortingOrder: 303, scaler: { m_ReferencePixelsPerUnit: 100 } });
+  // a 10 x 10 sprite trimmed to 6 x 10 at offset 2 in a 64 x 64 texture, not packed, clamped
+  const sprite = { sprite: "s", rect: { x: 0, y: 0, width: 10, height: 10 }, border: { x: 0, y: 0, z: 0, w: 0 }, pixelsToUnits: 100,
+                   pivot: { x: 0.5, y: 0.5 }, textureRect: { x: 8, y: 16, width: 6, height: 10 }, textureRectOffset: { x: 2, y: 0 },
+                   settingsRaw: 0, texture: { texture: "t.png", width: 64, height: 64, settings: { m_WrapU: 1, m_WrapV: 1 } } };
+  const img = { type: "MonoBehaviour", class: "Image", m_Enabled: 1, m_Material: null, m_Color: { r: 1, g: 1, b: 1, a: 1 },
+                m_Sprite: sprite, m_Type: 2, m_PreserveAspect: 0, m_FillCenter: 1, m_UseSpriteMesh: 0, m_PixelsPerUnitMultiplier: 1 };
+  const rec = { path: "T", name: "T", active: true, localPosition: { x: 0, y: 0, z: 0 }, localRotation: { x: 0, y: 0, z: 0, w: 1 },
+                localScale: { x: 1, y: 1, z: 1 }, components: [img],
+                rect: { m_AnchorMin: { x: 0.5, y: 0.5 }, m_AnchorMax: { x: 0.5, y: 0.5 }, m_AnchoredPosition: { x: 0, y: 0 },
+                        m_SizeDelta: { x: 25, y: 10 }, m_Pivot: { x: 0.5, y: 0.5 } } };
+  const pf = new CanvasPrefab([rec], canvas.root, canvas);
+  canvas.scaler = { m_UiScaleMode: 1, m_ReferenceResolution: { x: 100, y: 100 }, m_ScreenMatchMode: 0, m_MatchWidthOrHeight: 0,
+                    m_ReferencePixelsPerUnit: 100 };
+  canvas.layout(100, 100);
+  const [it] = canvas.drawItems();
+  assert.equal(pf.node("T").image.m_Type, 2);
+  const uv = (i) => [it.verts[i * 16 + 7], it.verts[i * 16 + 8]].map((x) => Math.round(x * 1e4) / 1e4);
+  const xy = (i) => [it.verts[i * 16], it.verts[i * 16 + 1]].map((x) => Math.round(x * 1e3) / 1e3);
+  // three tiles of 10: two whole, the last clipped to 5 (half of the packed width in u)
+  assert.equal(it.verts.length / 16, 12);
+  const [u0, v0, u1, v1] = [8 / 64, 16 / 64, 14 / 64, 26 / 64].map((x) => Math.round(x * 1e4) / 1e4);
+  assert.deepEqual([xy(0), uv(0)], [[37.5, 45], [u0, v0]]);
+  assert.deepEqual([xy(2), uv(2)], [[47.5, 55], [u1, v1]]);
+  assert.deepEqual([xy(10), uv(10)], [[62.5, 55], [Math.round((8 / 64 + 3 / 64) * 1e4) / 1e4, v1]]);
+});

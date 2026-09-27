@@ -1,5 +1,6 @@
 import { F } from "../engine/core.js";
 import { UIError } from "../engine/ugui.js";
+import { combineEmojiSequences, parseEmojiCharSequence } from "./ui-emoji.js";
 
 // Text setters of the story UI: Fwk.UI.UIText / UIRubyText.SetText, the ruby rewrite of the ruby text classes
 // (TMPro.RubyTextMeshProUGUI and Fwk.UI.RubyEmojiTextMeshProUGUI: ReplaceRubyTags -> RubyTextConstants.ReplaceRubyTags)
@@ -16,9 +17,6 @@ const RUBY_REGEX = /<r(uby)?="?([\s\S]*?)"?>([\s\S]*?)<\/r(uby)?>|<ruby>([\s\S]*
 
 // RubyTextHelper s_rubyTagRegex: the opening ruby tags HasRubyInFirstLine looks for
 const RUBY_OPEN_TAG = /<ruby\s*=\s*[^"'>]+>|<r\s*=\s*[^"'>]+>/;
-
-// characters TmpTextHelper.HasSequenceCharacter looks for: VS15, VS16, ZWJ
-const EMOJI_SEQUENCE = /[︎️‍]/;
 
 // Single.ToString() as String.Format writes a boxed float: "G" with 7 significant digits of the value as a double,
 // trailing zeros dropped, fixed-point for decimal exponents -5 < e < 7, else d.ddddddE+XX; -0 prints "0".
@@ -121,26 +119,22 @@ export const replaceRubyTags = (t, r, str) => {
 export const hasRubyInFirstLine = (text) => !!text && RUBY_OPEN_TAG.test(text.split("\n")[0]);
 
 // TMP_EmojiTextUGUI.PreprocessText (the preprocessor TMP runs on a text set through the text property, and
-// TmpTextHelper.CountRenderedCharacters on an emoji text): emoji sequences -> sprite tags (raises: the emoji sprite
-// asset is not in the data), then with parseCtrlCharacters "\\n" -> "\n" and "\\t" -> "\t". m_monospaceDistEm is 0 in
-// the constructor (no <mspace> prefix); no secondary preprocessor is set.
+// TmpTextHelper.CountRenderedCharacters on an emoji text): a rich text goes through
+// TMP_EmojiSearchEngine.ParseEmojiCharSequence with the component's sprite asset (none: TMP_Settings' default sprite
+// asset, none in the game, and the text stays as it is), then with parseCtrlCharacters "\\n" -> "\n" and "\\t" -> "\t".
+// m_monospaceDistEm is 0 in the constructor (no <mspace> prefix); no secondary preprocessor is set.
 export const preprocessEmojiText = (t, text) => {
-  if (t.richText && EMOJI_SEQUENCE.test(text)) throw new UIError(`${t.node.path}: emoji sequences not implemented`);
+  if (t.richText) text = parseEmojiCharSequence(t.spriteAsset, text);
   return t.parseCtrl ? text.replaceAll("\\n", "\n").replaceAll("\\t", "\t") : text;
 };
 
-// TmpTextHelper.CombineEmojiSequences: rich text with a VS15 / VS16 / ZWJ -> TMP_EmojiSearchEngine sprite tags
-const combineEmojiSequences = (t, text) => {
-  if (t.richText && EMOJI_SEQUENCE.test(text)) throw new UIError(`${t.node.path}: emoji sequences not implemented`);
-  return text;
-};
-
 // The text TmpTextHelper.CountRenderedCharacters counts for the component: an emoji text preprocesses it, a
-// RubyTextMeshProUGUI keeps it, any other text combines emoji sequences
-export const countedText = (t, b, text) => {
+// RubyTextMeshProUGUI keeps it, any other text combines emoji sequences (`emoji`: LocalizeManager's emoji sprite
+// asset, ui-emoji.js combineEmojiSequences)
+export const countedText = (t, b, text, emoji = null) => {
   if (EMOJI_TEXT_CLASSES.has(b.class)) return preprocessEmojiText(t, text);
   if (b.class === "RubyTextMeshProUGUI") return text;
-  return combineEmojiSequences(t, text);
+  return combineEmojiSequences(t, text, emoji);
 };
 
 // The string TMP lays out after the component's text setter, without changing anything: the ruby rewrite of a ruby
@@ -153,22 +147,24 @@ export const shownText = (t, b, text) => (b.uiRubyText && RUBY_CLASSES.has(b.cla
 // AdjustMarginTop: margin.y = HasRubyInFirstLine(s) ? _rubyMarginTop : the margin.y captured at Awake), else
 // SetTextWithoutRuby (UIText.SetText). The ForceMeshUpdate override only re-runs the rewrite with autosize.
 export class StoryText {
-  constructor(t, b) {
-    this.t = t; this.b = b;
+  constructor(t, b, emoji = null) {
+    this.t = t; this.b = b; this.emoji = emoji;    // LocalizeManager's emoji sprite asset (CombineEmojiSequences)
     this.ruby = !!b.uiRubyText && RUBY_CLASSES.has(b.class);
     if (this.ruby && !b.ruby) throw new UIError(`${t.node.path}: ruby settings of ${b.class} not in ui/fonts.json`);
     this.originMarginTop = t.margin.y;               // UIRubyText.EnsureOriginMarginTop (Awake)
-    this.text = "";
+    this.text = "";                                  // TMP_Text.text as the component's setter left it
   }
 
-  // UIText.GetText / UIRubyText.GetText: the text last given to SetText (before the ruby rewrite)
+  // UIText.GetText / UIRubyText.GetText: TMP_Text.text, the string the setter stored: the ruby rewrite of a ruby
+  // class (ReplaceRubyTags), else the text after CombineEmojiSequences (the emoji text preprocessor runs when the
+  // text is parsed and leaves it as is)
   getText() { return this.text; }
 
   setText(s) {
-    this.text = s;
     const t = this.t, b = this.b;
-    if (!this.ruby) { t.setText(combineEmojiSequences(t, s)); return; }
-    t.setText(EMOJI_TEXT_CLASSES.has(b.class) ? preprocessEmojiText(t, replaceRubyTags(t, b.ruby, s)) : replaceRubyTags(t, b.ruby, s));
+    if (!this.ruby) { this.text = combineEmojiSequences(t, s, this.emoji); t.setText(this.text); return; }
+    this.text = replaceRubyTags(t, b.ruby, s);
+    t.setText(EMOJI_TEXT_CLASSES.has(b.class) ? preprocessEmojiText(t, this.text) : this.text);
     const top = hasRubyInFirstLine(s) ? b.uiRubyText._rubyMarginTop : this.originMarginTop;
     if (top !== t.margin.y) t.setMargin({ ...t.margin, y: top });
   }

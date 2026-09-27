@@ -226,6 +226,7 @@ GLSL ES 3.10 programs and the `streams.json` of the sound directories are left o
 | `ui/languages.json` | The language settings ([Language](#language-uilanguagesjson)). | language |
 | `frames.json`, `effects.json`, `posteffects.json`, `stills.json`, `talkwindows.json`, `chat.json` | Media of the episode, each only when the episode uses it ([Media files](#media-files)). | common |
 | `videos/videos.json`, `videos/*.webm` | Movie and Clip videos (VP9 + Opus in WebM). | common |
+| `crilips/crilips.json`, `crilips/crilips.bin` | The CRI Lips analysis data (descriptor and float32 weights, [crilips.md](crilips.md#data-section-for-the-story-data-format)), only when a voice of the episode reaches the analysis. | common |
 | `host/host.json`, `host/ui/ui.json`, `host/spot/…`, `host/shaders/…` | With a `host`: the host screen (`ournotes.story-host/1`, [story-simple.md](story-simple.md#data)); the home spot's files under `host/spot/`. | common |
 | `ui/simple/ui.json`, `ui/simple/fonts.json`, `ui/simple/fonts/*.png`, `ui/simple/shaders/…` | With a `host`: the simple talk window in the story UI record format, its fonts and glyph pages in the format of `ui/fonts.json` and its text shader (paths relative to `ui/simple/`). | language (`ui.json` and the shaders common when equal) |
 
@@ -242,7 +243,7 @@ to the story root.
   "models": { "Character/Live2D/001_adv/…/model/…": { "dir": "live2d/…", "moc3": "….moc3", "prefab": "….prefab.json" } },
   "audio": { "sound_bgm_adv_…": "audio/sound_bgm_adv_…" },
   "frames": null, "effects": null, "postEffects": null, "stills": null, "talkWindows": null, "chat": null,
-  "videos": null }
+  "videos": null, "crilips": null }
 ```
 
 | Key | Meaning |
@@ -253,6 +254,7 @@ to the story root.
 | `audio` | Cue sheet name → its directory. Empty when the manifest's `audio` is `false`. |
 | `frames`, `effects`, `postEffects`, `stills`, `talkWindows`, `chat` | Path of the media file of that kind, `null` when the episode does not use it. |
 | `videos` | `videos/videos.json`, or `null` when the episode has no video. |
+| `crilips` | `{ "descriptor": "crilips/crilips.json", "data": "crilips/crilips.bin" }`: the CRI Lips analysis data, present when a voice of the episode reaches the analysis (a lip-synced voice while a model has no MotionSync controller, or a voice that other speakers follow); else `null`. Absent in sites built before it; the player then gives those speakers no analysis (`lipSyncMissing` `"CRI Lips analysis"`). |
 
 ## episode.json
 
@@ -335,20 +337,21 @@ ADV screen. Keys read:
 
 | Key | Content |
 |---|---|
-| `nodes` | The RectTransform hierarchy (node order: every parent before its children): `path`, `name`, `active`, `localPosition`, `localRotation`, `localScale`, `rect`, and the uGUI parts the story draws: `canvas`, `canvasScaler`, `canvasGroup`, `image`, `rawImage`, `gradient`, `layoutGroup`, `contentSizeFitter`, `layoutElement`, `safeAreaEdgeAnchor`, `animator`, `tweenSequence`, `animationTrigger`, `talkWindow`, `buttonImageState`, `outline`, `ruleTransition`, `localizeText`, the view records and `behaviours` (below); a text node has `textStyle` (below). A node whose parent is not listed is a child of the widget root. |
+| `nodes` | The RectTransform hierarchy (node order: every parent before its children): `path`, `name`, `active`, `localPosition`, `localRotation`, `localScale`, `rect`, and the uGUI parts the story draws: `canvas`, `canvasScaler`, `canvasGroup`, `image`, `rawImage`, `gradient`, `layoutGroup`, `contentSizeFitter`, `layoutElement`, `safeAreaEdgeAnchor`, `animator`, `tweenSequence`, `animationTrigger`, `talkWindow`, `buttonImageState`, `outline`, `ruleTransition`, `localizeText`, the view records and `behaviours` (below); a text node has `textStyle` (below). A node whose parent is not listed is a child of the widget root. The talk windows are children of `UIAdvWidget/FrontCanvas/UISafeArea/UIContainer/TalkView`, each with its prefab's nodes and a `talkWindow` record on its root (`_typingDelay`, `_safeAreaTalkBackgroundExpansionFactor`, `_useBackdropFilter`, `_backdropFilterColor`, `_talkTextColor`, `_talkTextOutlineColor`): `UIDefaultTalkWindow` first, then by name every other window the episode's `TalkWindow` rows attach (such as `UICenterTalkWindow`). When one of them has `_useBackdropFilter` set, the nodes also hold the front canvas' `CenterTalkBackdrop` (`canvasGroup` and `image`: the backdrop behind that window's talk). |
 | `frontCanvasOrder` | Sibling order of the front canvas' children. |
 | `widget` | `canvasSortOrder` (`UIWidget._canvasSortOrder`) and `canvases`: the widget's canvases in `UIWidget._canvases` order, each `{ path, sortingOrder }` (the canvas' `m_SortingOrder`; `UIWidget.TrueCanvasSortOrder` is the first one's, 99999 without canvases). The paths may name canvases that are not in `nodes`. |
 | `videoAndStillCamera` | The camera the video and still canvases render with (`UIAdvWidget._videoAndStillCamera`): `path` (its node, not in `nodes`), `active`, `camera` (`m_ClearFlags`, `m_BackGroundColor`, `m_NormalizedViewPortRect`, `near clip plane`, `far clip plane`, `field of view`, `orthographic`, `orthographic size`, `m_Depth`, `m_CullingMask`, `m_HDR`, `m_AllowMSAA`) and `additionalCameraData` (URP: `m_RenderPostProcessing`, `m_VolumeLayerMask`, `m_RendererIndex`, antialiasing, shadow and texture options, `m_CameraType`, `m_VolumeFrameworkUpdateModeOption`, `m_Dithering`, `m_StopNaN`). |
+| `uiCamera` | The UI camera of the `UIManager` prefab (`UIManager._cameraController` → `UICameraController._uiCamera`, with its `_uiCameraData`), in the form of `videoAndStillCamera`. The frame canvas has no camera in the widget prefab; this camera renders it at run time, and the canvas particle graphics are baked with it. |
 | `videoAndStillScreenImage` | The node of the raw image that shows that camera's output (`UIAdvWidget._videoAndStillScreenImage`). |
 | `masterIdTexts` | The `AdvMasterIdSettings` texts of the dialogs in the language: `_skipVideoMessageTextId`, `_skipButtonTextId`, `_cancelButtonTextId` (the video skip dialog), `_skipMessageTextId`, `_continuousSkipMessageTextId`, `_backEpisodeListButtonTextId`, `_continueEpisodeButtonTextId` (the skip confirm dialog), `_interruptionTitleTextId`, `_interruptionMessageTextId`, `_interruptionButtonTextId` (the interruption dialog) → `{ id, text }` (the `MasterText` id and its text). |
 | `dialogs` | Dialog name → `{ key, nodes }`: the prefab of the dialog (`UIAdvSkipConfirmDialogWidget`, the skip confirm dialog; `UICommonDialogWidget`, the dialog `CommonDialogManager` opens) and its nodes as node records (paths start with the dialog name); text nodes have `textStyle`. |
 | `chatWidget` | `{ nodes }`: the phone the chat windows attach to (`UIAdvChatWidget`), as node records: `ChatCanvas` (`canvas`, `canvasScaler`), `ChatCanvas/AdvChatView` (rect and the `chatView` record) and its `Target` (rect, `canvasGroup`). Paths start with `UIAdvChatWidget/`. |
 | `chatTexts` | Optional, an episode with chat windows: window name (the prefab after `Adv/Chat/Prefabs/`, as `chat.json` `windows`) → text node path (as in that window's node list) → `{ textStyle, localizeText }`: the text record of each TextMeshPro text of the window in the language (below; a localized text with the font and material `LocalizeText` gives it, its `fontRole` the slot of the Japanese lookup table, `font2` and up for the additional fonts) and the node's `LocalizeText` flags (`null` without one). |
 | `chatStatusTexts` | Optional, with chat windows and the master data: `MasterText` id → its text in the language, for the incoming call and lock screen status keys of the windows (`AdvChatWindow._incomingCallStatusTextKey`, `_lockScreenStatusTextKey`). |
-| `emoji` | The emoji sprite asset the emoji texts use (their `m_spriteAsset`, else `LocalizeManager.EmojiSpriteAsset`): `spriteAsset` (its name), `address`, `sequences` (`TMP_EmojiSearchEngine`'s lookup table: the text of a multi-code-point emoji → its sprite name) and `characters` (the code points of its sprite characters). The sprites themselves are not exported; a player that does not draw them can refuse texts that contain them. |
 | `sprites`, `letterBoxSprite` | Sprite name → sprite descriptor on a packed texture; the letterbox band sprite's name. |
 | `textures` | Packed texture name → texture descriptor (paths relative to `ui/`). |
 | `materials`, `materialKeywords` | The UI materials (the rule transition's, `Default UI Material`, the materials the drawn images name, such as the video mask's) and the GLES3 keyword set of each. |
+| `blur` | Optional, with a talk window whose `talkWindow._useBackdropFilter` is set: the UI blur the game runs while that window's talk area is shown (`UIManager.UseBlur`: everything drawn before the front canvas is blurred). `renderer` and `active`, then the renderer feature's pass settings `iterations`, `offset`, `downsample` and `blendRateMax`, and `shader`, the Dual Kawase blur shader (in `shaders`). |
 | `clips`, `controllers` | Animation clips and animator controllers of the indicators, title and location animations. |
 | `transitions` | Transition address → `RuleTransitionSettings` with its rule texture. |
 | `playerSettings` | `_defaultTransitionAssetAddress`, `_waitAfterVoiceTime`, `_waitTalkTextUnitTime`, `_minTalkDisplayTime`, `_isAdvViewportFollowOnResolutionChanged`. |
@@ -444,7 +447,9 @@ assets (`game`).
 | `texts` | object | Text node path (as in `ui/ui.json` `nodes`) → the node's text binding (below). Every text node of `ui/ui.json`. |
 | `dialogTexts` | object | Optional, open fonts: dialog name → text node path → text binding, one per text node of `ui/ui.json` `dialogs`. Game-font data has no dialog bindings. |
 | `chatTexts` | object | Optional, open fonts and an episode with chat windows: window name → text node path → text binding, one per text of `ui/ui.json` `chatTexts`. A text without `LocalizeText` keeps its serialized font asset, material and line spacing in `localized`. Game-font data has no chat bindings. |
-| `coverage` | object | `characters` (distinct characters shown), `missing` (characters no font asset of the chain has, as strings; drawn as TextMeshPro draws a missing character), and producer details. |
+| `spriteAssets` | object | Optional: sprite asset name → [sprite asset](#sprite-assets), present when the episode's texts draw sprites (the game's emoji sprite asset). |
+| `emojiSpriteAsset` | string | With `spriteAssets`: the sprite asset `LocalizeManager.EmojiSpriteAsset` is (a key of `spriteAssets`): the one a `UIText` gives its text, and the one `TmpTextHelper.CombineEmojiSequences` reads for a text without a sprite asset. |
+| `coverage` | object | `characters` (distinct characters shown), `missing` (characters no font asset of the chain has, as strings; drawn as TextMeshPro draws a missing character; not the characters a sprite draws), with sprites `sprites` (`characters`: the sprite characters held, `missing`: the names of those without an image), and producer details. |
 | `tmpSettings` | object | Optional (game): the game's TMP Settings values (`m_missingGlyphCharacter`, …). |
 | `lineBreaking` | object | Optional: TextMeshPro's line breaking rules of the game's TMP Settings: `leading` and `following` (the text of its leading and following characters files, as stored) and `useModernHangulLineBreakingRules`. A layout that breaks a line next to a character of these sets needs it. |
 
@@ -463,7 +468,9 @@ uses in this language after `LocalizeText` — `fontAsset` (a key of `fonts`), `
 (`RubyTextMeshProUGUI`, `RubyEmojiTextMeshProUGUI`: the serialized `_rubyVerticalOffset`, `_rubyScale`,
 `_rubyLineHeight`, `_rubyShowType`, `_rubyMargin`) and `uiRubyText` for a node with a `UIRubyText` component
 (`_rubyMarginTop`); `localizeKoreanAdjust` for a node with a `LocalizeKoreanAdjust` component (`_koreanFontStyle`: in
-Korean, 1 clears and 2 sets the bold style of `m_fontStyle`; `m_Enabled`).
+Korean, 1 clears and 2 sets the bold style of `m_fontStyle`; `m_Enabled`). A text a `UIText` (or `UIRubyText`) drives
+has `spriteAsset` (a key of `spriteAssets`: `UIText.Awake` gives the text `LocalizeManager.EmojiSpriteAsset`) and its
+serialized `m_tintAllSprites`, when `spriteAssets` is present; any other text has no sprite asset.
 
 ### Font assets
 
@@ -497,12 +504,35 @@ the atlas; a renderer that samples a page instead uses the page's size for the t
 for its atlas.
 
 Open font assets (`source` `open`) hold the characters of the episode's text table, its title, the static labels of
-the UI, the chat windows' status texts and the texts the chat windows format at run time (battery percentages, member
-counts, read counts, the ellipsis of a shortened name). They keep TextMeshPro's scale relations: each takes the point
+the UI, the chat windows' status texts, the serialized texts of the chat windows' text nodes (shown until a row sets
+them) and the texts the chat windows format at run time (battery percentages, member counts, read counts, the ellipsis
+of a shortened name). They keep TextMeshPro's scale relations: each takes the point
 size, padding and style settings of the game font asset the text uses in that language, its face info and glyph metrics come from the font
 file at that point size, and its materials are the game's text materials of that language with the page as
 `_MainTex`. A game asset of an anti-aliased distance-field render mode (`SDFAA`) gets a distance field of the same
 spread, recorded as `SDF` in `atlasRenderMode` (the game render mode is in `source.generator`). Line breaks can differ from the game where the font's advances differ; the layout rules are the same.
+
+### Sprite assets
+
+A sprite asset is a TextMeshPro sprite asset (`TMP_SpriteAsset`) reduced to the sprites the episode's texts can draw:
+TextMeshPro draws a character a text's font assets lack from the text's sprite asset when it has a sprite of that code
+point, and a `<sprite name="...">` tag from the sprite of that name; the emoji search of the emoji texts
+(`TMP_EmojiSearchEngine`) turns emoji sequences into such tags.
+
+| Key | Meaning |
+|---|---|
+| `faceInfo` | TMP `m_FaceInfo` of the sprite asset. A point size of 0 (the game's emoji asset) scales a sprite by the face of the text's font asset: element scale = font scale × ascent line / glyph height × character scale × glyph scale. |
+| `characters` | The sprite character table in its order: `{ index, unicode, name, glyph, scale }` (`index` = the position in the game asset's table; `glyph` a key of `glyphs`). By code point the first character of the table counts, by name the first whose name has the tag value's hash (`TMP_TextUtilities.GetHashCode`, case-insensitive). |
+| `glyphs` | Glyph index → `{ metrics, rect, scale, atlasIndex, packed }` as for font assets; `rect` and `packed` locate the sprite's texels in its page (a sprite without an image has an empty `rect` and no `packed`: it keeps its place and draws nothing). |
+| `sequences` | The entries of the asset's legacy sprite list whose name holds a `-` (`{ name, unicode }`, in order): the emoji search builds its sequence table from them (`TryUpdateSequenceLookupTable`). |
+| `material` | The sprite material (a key of `materials`, shader `TextMeshPro/Sprite`, `_MainTex` the page). |
+| `source` | Open data: the emoji font the images were drawn from (as for font assets), or `null` without one. |
+| `subset` | Open data: which sprites the asset holds. |
+
+A sprite quad's uvs are its glyph rect over its page size; its colour is white with the text's font colour alpha
+(sprites are not tinted); the sprites of a text draw after its glyphs, as the sub mesh of the sprite material. Open
+data draw each image from the emoji font at the game glyph's size (the bitmap centred in a square, resampled) into one
+page with a transparent texel around each sprite; game data keep the game's sprite sheet.
 
 ## Language (`ui/languages.json`)
 
@@ -573,7 +603,8 @@ Besides the charts and models, validates `stories.json` and every story (or the 
   header, their prefabs as the model viewer reads them, their atlas pages, and a `shaders/` variant for every
   drawable material; every cue sheet the episode's cue sheet table names has its `cues.json` when `audio` is true, and
   every file a `cues.json` names is present with the manifest's `audioFormat`, FLAC `STREAMINFO` or MP4 header
-  agreeing with the cue; without audio no cue sheet and no waveform file);
+  agreeing with the cue; without audio no cue sheet and no waveform file); `story.json` `crilips`, when set, only
+  with audio, both files common, the descriptor float32 little-endian with every block inside `crilips.bin`;
 - `requires.commands` equal to the facts' `commands` and to the command names of the episode's rows without
   `IgnoreData` together with the player settings' initialize and finalize rows; `requires.motionSync` as the
   episode's rows give it;

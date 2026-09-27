@@ -99,20 +99,22 @@ npm package and the bundles do not include it. See [docs/live2d.md](docs/live2d.
 The package also plays the game's story episodes (ADV): `ournotes-player/story` (custom element `<ournotes-story>`)
 runs an episode's command rows on the game's playback loop, with the stage, the Live2D characters, the camera and
 post-processing, the talk window, the rule transitions, music, sound effects and voices. Home spot talks and live
-result talks play in their host screen. It needs Live2D Cubism Core for Web and, for the voices' lip sync, the CRI Core
-of Live2D's MotionSync plugin; the page loads both itself. An episode that uses a part the player does not reproduce
-is refused before it starts, with an error that names that part. The exception is a UIParticle graphic on a frame,
-which is found only while drawing: the episode stops at that frame ([docs/story.md](docs/story.md#not-reproduced)).
-The story data comes from nnnotes (`nnnotes web --all-stories`).
+result talks play in their host screen. It needs Live2D Cubism Core for Web and, for the lip sync of models with a
+MotionSync controller, the CRI Core of Live2D's MotionSync plugin; the page loads both itself. An episode that uses a
+part the player does not reproduce is refused before it starts, with an error that names that part. The exception is
+a UIParticle graphic on a still, which is found only while drawing: the episode stops at that frame
+([docs/story.md](docs/story.md#not-reproduced)). The story data comes from nnnotes (`nnnotes web --all-stories`).
 
-Checked on the 946 episodes of one region's data (English text, no sound files):
+Checked on the 946 episodes of one region's data, without sound files (English text unless stated):
 
-- Headless, on a faster clock: 930 play to their end. 16 are refused because they use the centered talk window.
-- Drawn at normal speed, a sample of 56 episodes covering every kind of drawn feature: 44 play to their end. Of the
-  others, 5 are refused before they start (the centered talk window, the chat window, a spot room lit by URP) and 7
-  stop at a UIParticle frame, which the player does not draw.
-- Of the 20 sampled episodes drawn twice, the 15 that play to their end give the same commands, lines and per-frame
-  state in both runs.
+- Headless, on a faster clock: 944 play to their end. 2 are refused before they start because a text uses something
+  the text layout does not reproduce yet (an underline tag; an emoji variation selector after an emoji sprite).
+- Drawn at normal speed, a sample of 57 episodes covering every kind of drawn feature, the canvas particles of frames,
+  the centered talk window, the chat phone and the spot rooms lit by URP among them: all 57 play to their end.
+- The 9 episodes with emoji, in Japanese and in English, drawn on the faster clock: 17 of the 18 play to their end;
+  the English text of one is refused before it starts (the variation selector above).
+- Drawn twice, the 20 sampled episodes and the 17 emoji runs that play to their end give the same commands, lines
+  and per-frame state in both runs.
 - Every file a story reads is listed in its manifest.
 
 ## Browser support

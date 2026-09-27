@@ -192,10 +192,12 @@ export class SimpleStorySession {
       const camNode = scene.cameraManager.nodes.find((n) => n.path === "CameraManager/MainCamera");
       const cam = camNode ? camNode.components.find((c) => c.type === "Camera") : null;
       if (!cam) throw new Error(`${what}: scene.json has no CameraManager/MainCamera camera`);
-      const bg = cam.m_BackGroundColor;
+      const bg = cam.m_BackGroundColor, data = camNode.components.find((c) => c.class === "UniversalAdditionalCameraData");
       this.home = await SimpleHomeHost.create(gl, store, loop, host,
         { camera: { near: cam["near clip plane"], far: cam["far clip plane"], clearFlags: cam.m_ClearFlags,
-                    clearColor: [bg.r, bg.g, bg.b, bg.a] }, spine: opts.spine });
+                    clearColor: [bg.r, bg.g, bg.b, bg.a], orthographicSize: cam["orthographic size"],
+                    rendererIndex: data ? data.m_RendererIndex : -1 },
+          graphics: scene.player, quality: quality.level, spine: opts.spine });
       this.missing.push(...this.home.missing);
     }
     if (renderer) await renderer.load();

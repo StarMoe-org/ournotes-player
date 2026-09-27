@@ -6,6 +6,7 @@ import { DOFloat } from "./dotween.js";
 import { stretchView, storyScreen } from "./screen.js";
 import { featureSlot, featureState } from "./state.js";
 import { loopWaitUntil } from "./timing.js";
+import { PrefabParticles } from "./uiparticle.js";
 
 // Frames: AdvFrameView on UIAdvWidget/FrameCanvas and the AdvFrame prefab instances of frames.json
 // (AdvEpisodeResourceLoader.LoadFrame: one instance per TargetAssetName, AdvFrame.Init at load).
@@ -91,6 +92,9 @@ export class FrameInstance {
     this.group = prefab.ref(comp._canvasGroup);
     if (!this.group || !this.group.canvasGroup) throw new UIError(`frame ${name}: no CanvasGroup`);
     if (comp._screenPadding) throw new UIError(`frame ${name}: AdvFrameScreenPadding not implemented`);
+    // Coffee UIParticle and the particle systems of the prefab (uiparticle.js)
+    const hasParticles = doc.nodes.some((r) => (r.components || []).some((c) => ["UIParticle", "ParticleSystem"].includes(c.class || c.type)));
+    this.particles = hasParticles ? new PrefabParticles(screen.canvasParticles("frame"), prefab, doc.nodes, name) : null;
     // Animators of the prefab (the AdvFrame's own one drives the states)
     this.animators = [];
     for (const rec of doc.nodes)
@@ -122,7 +126,7 @@ export class FrameInstance {
   _bindExtra(n, prop) {
     if (prop === "StretchPosition.positionPercent")
       return n.stretch ? { get: () => n.stretch.positionPercent, set: (v) => { n.stretch.positionPercent = v; } } : null;
-    if (prop.startsWith("ParticleSystem.")) return this.screen.particleProperty ? this.screen.particleProperty(n, prop) : null;
+    if (prop.startsWith("ParticleSystem.")) return this.particles ? this.particles.property(n, prop) : null;
     return undefined;
   }
 

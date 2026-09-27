@@ -45,9 +45,12 @@ character has no tap target in its spot (the spot does not place that character)
 the session plays it as a tap talk without the camera's move and lists
 `"no tap target for the talk's character in the spot (camera focus not played)"` in `missing`.
 
-A spot whose room has a material with the Universal Render Pipeline/Lit shader needs URP's lighting state (the
-per-camera lighting keywords and the light uniforms), which the host does not set: a session that draws refuses
-such an episode before it starts, naming the material; a headless session plays it.
+A room material with the Universal Render Pipeline/Lit shader is drawn with URP's lighting state for the main camera
+in the spot: the lighting keywords of the quality level's pipeline asset (spherical harmonics per vertex, and at `best`
+the per-vertex additional lights keyword), no main or additional light (the spot has none), the ambient of the spot
+scene's render settings (a white flat ambient) and a black default reflection. A session that draws refuses, before it
+starts, a spot whose lighting the host does not reproduce (a light, fog, lightmaps, another ambient or reflection,
+shadows); a headless session plays it.
 
 ## Data
 
@@ -58,8 +61,9 @@ Besides the story files of `docs/story-data-format.md`:
   `host/ui/ui.json`), the sequences the host screen has played when a talk can start (`openedSequences`: the talk
   starts with their Animator states at their end), and per host its scene data (`home`: the spot export, the room
   glTF with the background root's transform, per-node visibility after the situation, materials, Spine materials and
-  sorting, shaders, blur parameters, ambient sound; `afterlive`: the background node and sprite, the reward panel,
-  the list of runtime parts not drawn).
+  sorting, shaders, blur parameters, ambient sound, the spot scene's render settings and the lights of the scene and
+  the placed prefabs; `afterlive`: the background node and sprite, the reward panel, the list of runtime parts not
+  drawn).
 - `ui/simple/ui.json`, `ui/simple/fonts.json` (per language): the talk window (and, for area talks, the system message
   widget and its title text) in the story UI record format, with the fonts of its texts.
 - Animator clips of the host UI key their curves by the path below the Animator (`"<path>:<Class>.<property>"`);

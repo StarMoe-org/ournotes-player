@@ -403,7 +403,8 @@ export class FxParticleSystem {
       if (![0, 1, 2, 3, 4, 5, 6, 10, 11, 12, 15, 16, 18].includes(S.type)) this.unsupported.push(`shape type ${S.type}`);
       if ([0, 1, 2, 3, 4, 10, 11, 12].includes(S.type) && S.radius.mode !== 0) this.unsupported.push("shape radius mode");
       if ([4, 10, 11].includes(S.type) && S.arc.mode !== 0) this.unsupported.push("shape arc mode");
-      if (this.shape.alignToDirection) this.unsupported.push("shape alignToDirection");
+      if (this.shape.alignToDirection && (I.rotation3D || (c.RotationModule.enabled && c.RotationModule.separateAxes)))
+        this.unsupported.push("shape alignToDirection with 3D rotation");
       if (S.type === 6) this._meshShape(S);
     }
     const Z = c.SizeModule;
@@ -470,7 +471,7 @@ export class FxParticleSystem {
     const r = rendererComp && rendererComp.m_Enabled ? rendererComp : null;
     this._rendererComp = rendererComp || null;
     this._rendererConfig = undefined;
-    this.renderer = r ? FxParticleSystem._rendererSettings(r) : null;
+    this.renderer = r ? this._alignSettings(FxParticleSystem._rendererSettings(r)) : null;
     this.sortingOrder = r ? r.m_SortingOrder | 0 : 0;     // LiveParticleOrderInLayerSetter may overwrite
     this.renderUnsupported = [];
     if (this.renderer) {
@@ -512,9 +513,33 @@ export class FxParticleSystem {
     };
   }
 
+  // Shape module Align To Direction: billboard and mesh particles are drawn with Local render alignment (World stays
+  // World), each particle turned towards its initial direction of travel (_alignment).
+  // ENGINE: the renderer takes Local alignment for View and Facing under Align To Direction; the editor offers only World
+  // and Local then, and shows View / Facing as Local.
+  _alignSettings(R) {
+    if (!(this.shape.enabled && this.shape.alignToDirection)) return R;
+    return { ...R, alignment: R.alignment === 1 ? 1 : 2, alignToDirection: true };
+  }
+
+  // The turn of an aligned particle (rotation columns) from its initial direction d in the system frame (shape rotation
+  // and direction randomisation included): Quaternion.LookRotation(d, Vector3.up), so the particle's z axis is d; a
+  // direction along y keeps x on the x axis.
+  // ENGINE: the native turn is not documented; LookRotation with the world up in the system frame is assumed.
+  static _alignment(d) {
+    const V = FxV, z = V.norm(d);
+    let x = V.cross([0, 1, 0], z);
+    x = V.len(x) < 1e-6 ? [1, 0, 0] : V.norm(x);
+    return [x, V.cross(z, x), z];
+  }
+
   // renderer features the geometry does not implement (drawn or baked -> FxError)
   static _geometryUnsupported(R) {
     const out = [];
+    if (R.alignToDirection) {
+      if (R.renderMode !== 0 && R.renderMode !== 4) out.push(`shape alignToDirection with render mode ${R.renderMode}`);
+      if (R.alignment === 1) out.push("shape alignToDirection with World render alignment");
+    }
     if (![0, 1, 2, 3, 4, 5].includes(R.renderMode)) out.push(`render mode ${R.renderMode}`);
     if (R.renderMode === 1) {
       if (R.freeformStretching) out.push("freeform stretching");
@@ -530,7 +555,7 @@ export class FxParticleSystem {
   // renderer settings also for a disabled renderer (null without a ParticleSystemRenderer component)
   get rendererConfig() {
     if (this._rendererConfig === undefined)
-      this._rendererConfig = this.renderer || (this._rendererComp ? FxParticleSystem._rendererSettings(this._rendererComp) : null);
+      this._rendererConfig = this.renderer || (this._rendererComp ? this._alignSettings(FxParticleSystem._rendererSettings(this._rendererComp)) : null);
     return this._rendererConfig;
   }
 
@@ -1062,6 +1087,7 @@ export class FxParticleSystem {
     const flip = R2 ? R2.flip.map((x) => (x > 0 && rng.value() < x ? -1 : 1)) : [1, 1, 1];
     const p = { pos, vel, anim: [0, 0, 0], age: 0, life, size0: size, rot, spin: sign, color0, rnd, flip,
                 stable: [rng.value(), rng.value(), rng.value(), rng.value()] };
+    if (this.shape.enabled && this.shape.alignToDirection) p.align = FxParticleSystem._alignment(sh.d);
     if (this.uv) p.uvr = [rng.value(), rng.value()];              // texture sheet: frame over time, start frame
     if (this.subEmitters.length)                                  // Birth sub-emitters: Emit Probability at birth
       p.sub = this.subEmitters.map((e) => (e.probability >= 1 || rng.value() < e.probability
@@ -1487,7 +1513,10 @@ export class FxParticleSystem {
         } else {
           switch (R.alignment) {
             case 1: right = [1, 0, 0]; up = [0, 1, 0]; n = [0, 0, -1]; break;
-            case 2: right = fr.R[0]; up = fr.R[1]; n = V.scale(fr.R[2], -1); break;
+            case 2:
+              if (p.align) { right = V.colsMul(fr.R, p.align[0]); up = V.colsMul(fr.R, p.align[1]); n = V.scale(V.colsMul(fr.R, p.align[2]), -1); }
+              else { right = fr.R[0]; up = fr.R[1]; n = V.scale(fr.R[2], -1); }
+              break;
             case 3: {
               const f = V.norm(V.sub(w, cb.pos));
               right = V.norm(V.cross(cb.up, f)); up = V.cross(f, right); n = V.scale(f, -1); break;
@@ -1528,7 +1557,7 @@ export class FxParticleSystem {
           const f = V.norm(V.sub(w, cb.pos)), rr = V.norm(V.cross(cb.up, f));
           orient = [rr, V.cross(f, rr), f];
         } else orient = [cb.right, cb.up, cb.fwd];                      // ENGINE: mesh particles with View alignment: mesh axes = camera axes
-        const tr = (o) => (local ? fromLocal(o) : fromWorld(V.colsMul(orient, o)));
+        const tr = (o) => (local ? fromLocal(p.align ? V.colsMul(p.align, o) : o) : fromWorld(V.colsMul(orient, o)));
         for (let vi = 0; vi < nv; vi++) {
           const mv = mesh.vertices[vi], mn = mesh.normals ? mesh.normals[vi] : [0, 0, 1], uv = mesh.uv0 ? mesh.uv0[vi] : [0, 0];
           const o = V.colsMul(Rp, [(mv[0] * p.flip[0] + pv[0]) * size[0], (mv[1] * p.flip[1] + pv[1]) * size[1],

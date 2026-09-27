@@ -128,7 +128,8 @@ export const createStoryContext = (parts) => {
 //   fadeOut(settings, color, dur)  UIRuleTransitionView.FadeOut; color {r, g, b, a}          -> Promise
 //   fadeIn(settings, color, dur)   UIRuleTransitionView.FadeIn                               -> Promise
 //   fadeInLetterBox()              UIAdvWidget.FadeInLetterBoxIfNeededAsync                  -> Promise
-//   render({gl, width, height})    the front canvas onto the bound target (the ADV viewport's post target)
+//   render({gl, width, height, target})  the front canvas onto the bound target (the ADV viewport's post target,
+//                                  `target`, which the UI blur reads and writes back)
 //   renderLetterBox({gl, screenWidth, screenHeight, viewport})   the letterbox bands onto the default framebuffer
 //   layers                         array indexed by ADV_CANVAS_LAYER of StoryUILayer: add(view) / remove(view); a view
 //                                  is { render({gl, width, height, canvasWidth, canvasHeight}), update?(dt) } and draws

@@ -3,6 +3,7 @@ import { addLogEntry } from "../features/talklog.js";
 import { removeTagsKeepingRuby } from "../ui-talk.js";
 import { delayWithPauseSpeedAdjustment } from "./misc.js";
 import { beginVoicePlaybackScope } from "./voice.js";
+import { CriLipsAnalyzer, CriLipsData } from "../../live2d/crilips/index.js";
 
 // Talk and Location, with the Talk command's voice routing and lip sync (AdvTalkVoicePlaybackHelper) and its
 // auto-advance timing (AdvTextCommandHelper.WaitAutoPlayText).
@@ -63,13 +64,32 @@ export const tryPlayVoice = (p, id, sounds, onStart) => {
 // SetLipSyncPresentationMode(ignore ? Default : AdvCalm)
 const presentation = (ch, ignore) => ch.setLipSyncPresentationMode(ignore ? 0 : 1);
 
+// CriLipsAtomAnalyzer (SoundSource.UseLipsAtomAnalyzer): the CRI Lips analysis of a voice on its own player, one per
+// voice and shared by the speakers that follow it. Without CRI Lips data in the story (story.json crilips) the
+// character gets the voice's PCM, which has no analysis (lipSyncMissing "CRI Lips analysis").
+const lipsData = new WeakMap();                                         // story context -> CriLipsData | null
+const lipsAnalyzers = new WeakMap();                                    // voice info -> CriLipsAnalyzer
+const lipsAnalyzerFor = (p, info, src) => {
+  const ctx = p.ctx;
+  let data = lipsData.get(ctx);
+  if (data === undefined) {
+    const d = ctx.story && ctx.story.crilips;
+    data = d ? new CriLipsData(ctx.assets.json(d.descriptor), ctx.assets.arrayBuffer(d.data)) : null;
+    lipsData.set(ctx, data);
+  }
+  if (!data) return src;
+  let a = lipsAnalyzers.get(info);
+  if (!a) { a = new CriLipsAnalyzer(data, src); lipsAnalyzers.set(info, a); }
+  return a;
+};
+
 // AdvTalkVoicePlaybackHelper.StartVoiceLipSync: the voice's player drives the character's MotionSync (the CRI Lips
 // analyzer for a character without MotionSync)
 export const startVoiceLipSync = (p, ch, info, ignore) => {
   presentation(ch, ignore);
   if (ignore) return;
   const src = p.ctx.audio.pcmSource(info);
-  if (ch.isMotionSyncEnabled === false) ch.setLipsAnalyzer(src);
+  if (ch.isMotionSyncEnabled === false) ch.setLipsAnalyzer(lipsAnalyzerFor(p, info, src));
   else { ch.setMotionSyncSource(src); p.session.motionSyncVoices.set(ch, info.id); }   // SetCriAtomExPlayer
   ch.setLipSyncEnabled(true);
   p.session.activeVoiceLipSync.set(ch, info.id);                       // RegisterActiveVoiceLipSync
@@ -80,7 +100,7 @@ const startSharedAnalyzerLipSync = (p, ch, info, ignore) => {
   presentation(ch, ignore);
   if (ignore) return;
   ch.setLipSyncEnabled(true);
-  ch.setLipsAnalyzer(p.ctx.audio.pcmSource(info));
+  ch.setLipsAnalyzer(lipsAnalyzerFor(p, info, p.ctx.audio.pcmSource(info)));
   p.session.activeVoiceLipSync.set(ch, info.id);
 };
 

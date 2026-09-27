@@ -23,6 +23,11 @@ import { UIError, UIMesh, uiColor32 } from "./ugui.js";
 // tabSize, characters {"<code point>": {glyph, scale}}, glyphs {"<index>": {metrics, rect, scale, atlasIndex,
 // packed {texture, dx, dy}, runtime?}}, glyphPairAdjustmentRecords, glyphPairAdjustments?, textureSize {page: {width,
 // height}}, lineBreaking? {leading, following, useModernHangulLineBreakingRules} (TMP_Settings) }.
+// A text with `t.spriteAsset` (TMP_Text.spriteAsset: a name) draws the characters its font asset lacks from that
+// sprite asset when it has them: host.spriteAsset(name) -> sprite asset record { name, faceInfo, characters [{index,
+// unicode, name, glyph, scale}] (the sprite character table, in order), glyphs {"<index>": {metrics, rect, scale,
+// packed? {texture, dx, dy}}}, material (a text host material name: the sprite shader, sampling the sheet),
+// textureSize {page: {width, height}} }; `t.m_tintAllSprites` must be 0 then.
 
 // ------------------------------------------------------------------- Fwk.UI.UIGradientImage
 // ModifyMesh -> CreateGradientMesh -> SetVertexColor. On the vertex stream (triangle list): project every vertex on
@@ -137,6 +142,36 @@ const TAGS_KNOWN = new Set(["i", "u", "s", "sub", "sup", "font", "material", "sp
   "strikethrough", "underline", "zwsp", "zwj", "nbsp", "shy", "cr", "table", "tr", "th", "td", "dir"]);
 const tagName = (s) => s.replace(/[a-z]/g, (c) => c.toUpperCase()).toLowerCase();
 
+// TMP_TextUtilities.GetHashCode: h = ((h << 5) + h) ^ ToUpperFast(c) over the UTF-16 units, int32 (ToUpperFast maps
+// through k_lookupStringU below U+0080 and keeps every other unit)
+const TMP_UPPER = "-------------------------------- !-#$%&-()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[-]^_`ABCDEFGHIJKLMNOPQRSTUVWXYZ{|}~-";
+export const tmpHashCode = (s) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h = (((h << 5) + h) | 0) ^ (c > TMP_UPPER.length - 1 ? c : TMP_UPPER.charCodeAt(c));
+  }
+  return h;
+};
+
+// TMP_Settings.missingCharacterSpriteUnicode of the game's settings
+const TMP_MISSING_SPRITE_UNICODE = 0;
+// the character code of a sprite a tag places: U+E000 + its sprite character table index (GenerateTextMesh)
+const TMP_SPRITE_TAG_BASE = 0xE000;
+
+// <sprite name="..."> (ValidateHtmlTag, the sprite tag with a NAME attribute: the form TMP_EmojiSearchEngine writes)
+// on the text's sprite asset (m_spriteAsset): the sprite whose name has the value's hash (case-insensitive, the first
+// such, SearchForSpriteByHashCode), else the asset's sprite of the missing character sprite code point, else null (the
+// tag is text). Other forms of the sprite tag, and a sprite tag of a text without a sprite asset (the default sprite
+// assets of TMP), are not implemented (raise).
+const SPRITE_NAME_TAG = /^sprite name=(?:"([^"]*)"|([^\s"]+))$/i;
+const spriteOfTag = (body, sprites) => {
+  const m = SPRITE_NAME_TAG.exec(body);
+  if (!m) throw new UIError(`rich text tag <${body}> not implemented`);
+  if (!sprites) throw new UIError(`rich text tag <${body}> of a text without a sprite asset not implemented`);
+  return sprites.byNameHash.get(tmpHashCode(m[1] ?? m[2])) || sprites.byUnicode.get(TMP_MISSING_SPRITE_UNICODE) || null;
+};
+
 // TMP_Text.ConvertToFloat (float32 digit accumulation): integer digits value * 10 + d, decimals value + d * m with
 // m = 0.1, 0.01, ... (m *= 0.1 in float)
 export const tmpConvertToFloat = (s) => {
@@ -172,10 +207,11 @@ const parseTag = (body) => {
   return { name, value: { kind: "string", text: v.split(" ")[0] } };
 };
 
-// TMP_Text.PopulateTextProcessingArray + the tag scan of GenerateTextMesh: text -> tokens [{c: code point} | {tag}].
-// Surrogate pairs are one character; <br> is a line feed; with parseControlCharacters \n \r \t \v are control
-// characters and \\ keeps the two characters after it.
-export const tmpTokens = (text, { richText = true, parseCtrl = false } = {}) => {
+// TMP_Text.PopulateTextProcessingArray + the tag scan of GenerateTextMesh: text -> tokens [{c: code point, sprite?} |
+// {tag}]. Surrogate pairs are one character; <br> is a line feed; with parseControlCharacters \n \r \t \v are control
+// characters and \\ keeps the two characters after it. `sprites` = the text's sprite asset (tmpSpriteAsset) or null:
+// a sprite tag it resolves is a character {c: U+E000 + index, sprite: the sprite character}.
+export const tmpTokens = (text, { richText = true, parseCtrl = false, sprites = null } = {}) => {
   const cps = Array.from(text), out = [];
   for (let i = 0; i < cps.length; i++) {
     const ch = cps[i];
@@ -194,11 +230,16 @@ export const tmpTokens = (text, { richText = true, parseCtrl = false } = {}) => 
         const tag = parseTag(body);
         const key = tag.name;
         if (key === "br" && !tag.value) { out.push({ c: 10 }); i = j; continue; }
-        // <mark> attributes (color=, padding=) are outside the implemented subset
-        if (key === "mark" && /\s\S/.test(body.slice(4)))
-          throw new UIError(`rich text tag <${body}> (mark attributes) not implemented`);
-        if (TAGS_IMPLEMENTED.has(key)) { out.push({ tag, body }); i = j; continue; }
-        if (TAGS_KNOWN.has(key.replace(/^\//, ""))) throw new UIError(`rich text tag <${body}> not implemented`);
+        if (key === "sprite") {
+          const sc = spriteOfTag(body, sprites);
+          if (sc) { out.push({ c: TMP_SPRITE_TAG_BASE + sc.index, sprite: sc }); i = j; continue; }
+        } else {
+          // <mark> attributes (color=, padding=) are outside the implemented subset
+          if (key === "mark" && /\s\S/.test(body.slice(4)))
+            throw new UIError(`rich text tag <${body}> (mark attributes) not implemented`);
+          if (TAGS_IMPLEMENTED.has(key)) { out.push({ tag, body }); i = j; continue; }
+          if (TAGS_KNOWN.has(key.replace(/^\//, ""))) throw new UIError(`rich text tag <${body}> not implemented`);
+        }
       }
     }
     out.push({ c: ch.codePointAt(0) });
@@ -259,6 +300,31 @@ const sameHighlight = (a, b) => a === b || (a.color.every((v, k) => v === b.colo
 const minF = (a, b) => (a < b ? a : b), maxF = (a, b) => (a > b ? a : b);
 const isBold = (s) => s.baseBold || s.boldCount > 0;
 
+// TMP_SpriteAsset.UpdateLookupTables over a sprite asset record: a character whose glyph the record lacks is left
+// out; by code point the first character of the table with it (U+FFFE is none), by name hash (tmpHashCode) the first
+// with it.
+const spriteLookups = new WeakMap();
+export const tmpSpriteAsset = (rec) => {
+  let s = spriteLookups.get(rec);
+  if (!s) {
+    const byUnicode = new Map(), byNameHash = new Map();
+    for (const c of rec.characters) {
+      if (!rec.glyphs[String(c.glyph)]) continue;
+      const h = tmpHashCode(c.name);
+      if (!byNameHash.has(h)) byNameHash.set(h, c);
+      if (c.unicode !== 0xFFFE && !byUnicode.has(c.unicode)) byUnicode.set(c.unicode, c);
+    }
+    s = { ...rec, byUnicode, byNameHash };
+    spriteLookups.set(rec, s);
+  }
+  return s;
+};
+
+// style padding of a sprite: none, no bold spacing (GenerateTextMesh sprite branch)
+const SPRITE_PADDING = Object.freeze({ P: 0, SP: 0, boldSpacing: 0 });
+// m_spriteColor of a sprite found by its code point (GenerateTextMesh resets it to white)
+const SPRITE_WHITE = Object.freeze([255, 255, 255, 255]);
+
 export class TMPText {
   constructor(host, node, t) {
     const loc = t.localized;
@@ -269,6 +335,14 @@ export class TMPText {
     this.materialName = loc.material;
     this.material = host.material(loc.material);
     if (!this.material) throw new UIError(`${node.path}: material ${loc.material} not in the data`);
+    this.spriteAsset = null;
+    if (t.spriteAsset) {
+      this.spriteAsset = tmpSpriteAsset(host.spriteAsset(t.spriteAsset));
+      if (!host.material(this.spriteAsset.material))
+        throw new UIError(`${node.path}: sprite material ${this.spriteAsset.material} not in the data`);
+      if (typeof t.m_tintAllSprites !== "number") throw new UIError(`${node.path}: m_tintAllSprites missing`);
+      if (t.m_tintAllSprites) throw new UIError(`${node.path}: tinted sprites not implemented`);
+    }
     this.fontSize = t.m_fontSize;
     this.autoSize = !!t.m_enableAutoSizing;
     this.fontSizeMin = t.m_fontSizeMin; this.fontSizeMax = t.m_fontSizeMax;
@@ -343,9 +417,21 @@ export class TMPText {
   setText(s) {
     if (s === this.text) return;
     this.text = s;
-    this.tokens = tmpTokens(s, { richText: this.richText, parseCtrl: this.parseCtrl });
-    this.elements = this.tokens.filter((k) => k.c !== undefined).map((k) => ({ u: k.c, ...this.glyphOf(k.c) }));
+    this.tokens = tmpTokens(s, this.tokenOptions());
+    this.elements = this._elements(this.tokens);
     this.dirty = true;
+  }
+
+  // the tmpTokens options of this text
+  tokenOptions() { return { richText: this.richText, parseCtrl: this.parseCtrl, sprites: this.spriteAsset }; }
+
+  // the text elements of the character tokens: glyphOf, a tag's sprite as it is
+  _elements(tokens) {
+    return tokens.filter((k) => k.c !== undefined).map((k) => ({ u: k.c, ...(k.sprite ? this._sprite(k.sprite) : this.glyphOf(k.c)) }));
+  }
+
+  _sprite(sc) {
+    return { g: this.spriteAsset.glyphs[String(sc.glyph)], charScale: sc.scale, index: sc.glyph, sprite: this.spriteAsset };
   }
 
   setMaxVisible(n) { if (n !== this.maxVisibleCharacters) { this.maxVisibleCharacters = n; this.dirty = true; } }
@@ -363,8 +449,9 @@ export class TMPText {
     if (mode !== this.wrapping) { this.wrapping = mode; this.dirty = true; }
   }
 
-  // TMP_FontAsset character lookup of the text's font asset (fallback fonts are resolved by the data: every
-  // character a text shows is in its asset) -> {g: glyph record, charScale, index: glyph index}
+  // SetArraySizes character lookup: the text's font asset (fallback fonts are resolved by the data: every character
+  // a text shows through a font is in its asset), then the text's sprite asset by code point
+  // (GetSpriteCharacterFromSpriteAsset). -> {g: glyph record, charScale, index: glyph index, sprite?: the sprite asset}
   glyphOf(u) {
     const f = this.font, c = f.characters[String(u)];
     if (c) {
@@ -373,6 +460,8 @@ export class TMPText {
       return { g, charScale: c.scale, index: c.glyph };
     }
     if (TMP_SYNTHESIZED.has(u)) return { g: TMP_ZERO_GLYPH, charScale: 1, index: 0 };
+    const sc = this.spriteAsset && this.spriteAsset.byUnicode.get(u);
+    if (sc) return this._sprite(sc);
     throw new UIError(`${f.name}: U+${u.toString(16).toUpperCase()} not in the font data`);
   }
 
@@ -471,6 +560,25 @@ export class TMPText {
              faceBaseline: F(F(fi.m_Baseline * adjusted) * fi.m_Scale) };
   }
 
+  // scales of a sprite (GenerateTextMesh / CalculatePreferredValues sprite branch; m_fontScaleMultiplier 1): with a
+  // sprite face point size, the sprite face's scale, baseline and ascent / descent lines; without one (0), the
+  // current font asset's face: elementScale = fontScale x (ascentLine / glyph height x character scale x glyph scale),
+  // and the ascender / descender are the face's lines x fontScale / elementScale.
+  // -> {scale, faceBaseline, ascender, descender} (ascender / descender before the element scale)
+  _spriteScale(size, e) {
+    const fi = this.font.faceInfo, sf = e.sprite.faceInfo, gm = e.g.metrics;
+    const fontScale = F(F(size / fi.m_PointSize) * fi.m_Scale);
+    if (sf.m_PointSize > 0) {
+      const spriteScale = F(F(size / sf.m_PointSize) * sf.m_Scale);
+      return { scale: F(spriteScale * F(e.charScale * e.g.scale)), faceBaseline: F(F(fontScale * sf.m_Baseline) * sf.m_Scale),
+               ascender: sf.m_AscentLine, descender: sf.m_DescentLine };
+    }
+    const scale = F(fontScale * F(F(F(fi.m_AscentLine / gm.m_Height) * e.charScale) * e.g.scale));
+    const delta = scale === 0 ? 0 : F(fontScale / scale);
+    return { scale, faceBaseline: F(F(fontScale * fi.m_Baseline) * fi.m_Scale),
+             ascender: F(fi.m_AscentLine * delta), descender: F(delta * fi.m_DescentLine) };
+  }
+
   // style padding of a character (normal / bold): style * GradientScale * ScaleRatioA / 4, with the material padding
   // clamped to the gradient scale -> {P, SP, boldSpacing}
   _stylePadding(bold) {
@@ -487,10 +595,11 @@ export class TMPText {
 
   // Kerning of character i: the first value record of the pair (i, i + 1) plus the second of (i - 1, i), key first
   // glyph | second glyph << 16. Flag IgnoreSpacingAdjustments zeroes the character spacing. Placement adjustments
-  // are not implemented (raise). -> {xAdvance, characterSpacing}
+  // are not implemented (raise). A sprite has none, and a sprite neighbour gives no pair (the lookups read
+  // character elements only). -> {xAdvance, characterSpacing}
   _adjust(i, els = this.elements) {
     const out = { xAdvance: 0, characterSpacing: this.characterSpacing };
-    if (!this.pairs) return out;
+    if (!this.pairs || els[i].sprite) return out;
     const base = els[i].index;
     let xPl = 0, yPl = 0;
     const take = (r, which) => {
@@ -498,8 +607,14 @@ export class TMPText {
       out.xAdvance = F(out.xAdvance + v.xAdvance); xPl = F(xPl + v.xPlacement); yPl = F(yPl + v.yPlacement);
       if (r.flags & TMP_IGNORE_SPACING) out.characterSpacing = 0;
     };
-    if (i < els.length - 1) { const r = this.pairs[String((base | (els[i + 1].index << 16)) >>> 0)]; if (r) take(r, "first"); }
-    if (i >= 1) { const r = this.pairs[String((els[i - 1].index | (base << 16)) >>> 0)]; if (r) take(r, "second"); }
+    if (i < els.length - 1 && !els[i + 1].sprite) {
+      const r = this.pairs[String((base | (els[i + 1].index << 16)) >>> 0)];
+      if (r) take(r, "first");
+    }
+    if (i >= 1 && !els[i - 1].sprite) {
+      const r = this.pairs[String((els[i - 1].index | (base << 16)) >>> 0)];
+      if (r) take(r, "second");
+    }
     if (xPl !== 0 || yPl !== 0) throw new UIError(`${this.node.path}: glyph placement adjustments not implemented`);
     return out;
   }
@@ -531,8 +646,8 @@ export class TMPText {
   // TMP_Text.GetPreferredValues(string).x: the preferred width of `s` with this text's settings (SetTextInternal: the
   // string is parsed without the text preprocessor; the text shown is not changed)
   preferredWidthOf(s) {
-    const tokens = tmpTokens(s, { richText: this.richText, parseCtrl: this.parseCtrl });
-    const elements = tokens.filter((k) => k.c !== undefined).map((k) => ({ u: k.c, ...this.glyphOf(k.c) }));
+    const tokens = tmpTokens(s, this.tokenOptions());
+    const elements = this._elements(tokens);
     return this._preferredValues(tokens, elements, TMP_LARGE, false, TMP_WRAP.NoWrap, this._marginWidth()).x;
   }
 
@@ -589,12 +704,14 @@ export class TMPText {
       if (tok.c === undefined) { this._tag(L.style, tok, fontSize, at); continue; }
       const st = L.style, cc = L.cc, e = els[cc], u = e.u, m = e.g.metrics;
       if (u === 0xAD) throw new UIError(`${this.node.path}: soft hyphen not implemented`);
-      const elementScale = u === 0x03 ? 0 : this._charScale(st.size, e).scale;   // end of text: scale 0
+      const sp = e.sprite ? this._spriteScale(st.size, e) : null;
+      const elementScale = u === 0x03 ? 0 : (sp || this._charScale(st.size, e)).scale;   // end of text: scale 0
       const ws = u <= 0xFFFF && isWhiteSpace(u);
       const adj = this._adjust(cc, els);
-      const { boldSpacing } = this._stylePadding(isBold(st));
+      const { boldSpacing } = sp ? SPRITE_PADDING : this._stylePadding(isBold(st));
       const bo = st.baselineOffset;
-      const elementAscender = F(F(fi.m_AscentLine * elementScale) + bo), elementDescender = F(F(fi.m_DescentLine * elementScale) + bo);
+      const elementAscender = sp ? F(F(elementScale * sp.ascender) + bo) : F(F(fi.m_AscentLine * elementScale) + bo);
+      const elementDescender = sp ? F(F(elementScale * sp.descender) + bo) : F(F(fi.m_DescentLine * elementScale) + bo);
       const isFirstOfLine = cc === L.firstCharOfLine;
       const c = ci[cc] = { u, xAdvance: 0, lineNumber: L.lineNumber, adjustedAscender: 0 };
       if (isFirstOfLine || !ws) {
@@ -610,7 +727,7 @@ export class TMPText {
       }
       if (L.elementDescender <= minDescender) minDescender = L.elementDescender;
       if (L.lineNumber === 0 && (isFirstOfLine || !ws)) L.maxTextAscender = L.maxLineAscender;
-      if (TMPText._visible(u)) {
+      if (sp || TMPText._visible(u)) {                  // a sprite is always visible
         const textWidth = F(Math.abs(L.xAdvance) + F(m.m_HorizontalAdvance * elementScale));
         if (tmpIsBaseGlyph(u) && textWidth > widthOfTextArea && wrap && cc !== L.firstCharOfLine) {
           i = restore(wordWrapState);
@@ -847,8 +964,9 @@ export class TMPText {
       if (tok.c === undefined) { this._tag(L.style, tok, fontSize, at); continue; }
       const st = L.style, cc = L.cc, e = els[cc], u = e.u, m = e.g.metrics;
       if (u === 0xAD) throw new UIError(`${this.node.path}: soft hyphen not implemented`);
-      const { scale, faceBaseline } = this._charScale(st.size, e);
-      const bold = isBold(st), { P, SP, boldSpacing } = this._stylePadding(bold);
+      const sp = e.sprite ? this._spriteScale(st.size, e) : null;
+      const { scale, faceBaseline } = sp || this._charScale(st.size, e);
+      const bold = !sp && isBold(st), { P, SP, boldSpacing } = sp ? SPRITE_PADDING : this._stylePadding(bold);
       const ws = u <= 0xFFFF && isWhiteSpace(u);
       const adj = this._adjust(cc);
       const bo = st.baselineOffset;
@@ -866,12 +984,14 @@ export class TMPText {
           return [F(F(F(cs * dx) - F(sn * dy)) + ox), F(F(F(sn * dx) + F(cs * dy)) + oy)];
         });
       }
-      const c = { u, g: e.g, scale, P, SP, bold, x0, y0, x1, y1, corners, lineNumber: L.lineNumber, visible: false, color: null,
+      const c = { u, g: e.g, sprite: e.sprite || null, scale, P, SP, bold, x0, y0, x1, y1, corners, lineNumber: L.lineNumber,
+                  visible: false, color: null,
                   baselineY: F(F(faceBaseline - L.lineOffset) + bo), origin: L.xAdvance,
                   hl: st.markCount > 0 ? st.hlState : null, rotated: st.rotate !== null, kern: adj.xAdvance };
       chars[cc] = c;
-      // ascender / descender in line space
-      const elementAscender = F(F(fi.m_AscentLine * scale) + bo), elementDescender = F(F(fi.m_DescentLine * scale) + bo);
+      // ascender / descender in line space (a sprite's: no small caps division)
+      const elementAscender = sp ? F(F(scale * sp.ascender) + bo) : F(F(fi.m_AscentLine * scale) + bo);
+      const elementDescender = sp ? F(F(scale * sp.descender) + bo) : F(F(fi.m_DescentLine * scale) + bo);
       const isFirstOfLine = cc === L.firstCharOfLine;
       if (isFirstOfLine || !ws) {
         let aa = elementAscender, ad = elementDescender;
@@ -888,8 +1008,8 @@ export class TMPText {
       }
       if (L.lineNumber === 0 && (isFirstOfLine || !ws)) L.maxTextAscender = L.maxLineAscender;
       const spacing = this._spacing(emScale, adj.characterSpacing, boldSpacing);
-      // visible characters: bounds checks (autosize, word wrap), vertex colour
-      if (TMPText._visible(u)) {
+      // visible characters (sprites always): bounds checks (autosize, word wrap), vertex colour
+      if (sp || TMPText._visible(u)) {
         const textWidth = F(Math.abs(L.xAdvance) + F(m.m_HorizontalAdvance * scale));
         const textHeight = F(F(L.maxTextAscender - F(L.maxLineDescender - L.lineOffset)) +
                              (L.lineOffset > 0 ? F(L.maxLineAscender - L.startOfLineAscender) : 0));
@@ -944,7 +1064,12 @@ export class TMPText {
         }
         c.visible = u !== 9;
         const vc = this.overrideHtmlColors ? this.fontColor32 : st.color;
-        c.color = [vc[0], vc[1], vc[2], Math.min(this.fontColor32[3], vc[3])];   // SaveGlyphVertexInfo alpha
+        if (sp) {
+          // SaveSpriteVertexInfo, untinted: the sprite colour; alpha = the font colour's when it is not above the
+          // sprite colour's, else min(sprite colour, vertex colour)
+          const k = SPRITE_WHITE, fa = this.fontColor32[3];
+          c.color = [k[0], k[1], k[2], fa <= k[3] ? fa : Math.min(k[3], vc[3])];
+        } else c.color = [vc[0], vc[1], vc[2], Math.min(this.fontColor32[3], vc[3])];   // SaveGlyphVertexInfo alpha
         if (isStartOfNewLine) { isStartOfNewLine = false; L.firstVisibleOfLine = cc; }
         L.lineVisibleCount++;
         L.lastVisibleOfLine = cc;
@@ -1056,6 +1181,20 @@ export class TMPText {
       c.quadCorners = c.corners.map(([x, y]) => [F(x + c.offset.x), F(y + c.offset.y)]);
       const [bl, , tr] = c.quadCorners;
       c.quad = [bl[0], bl[1], tr[0], tr[1]];
+      if (c.sprite) {
+        // SaveSpriteVertexInfo uvs: the glyph rect over the sprite sheet size, (float)int / (float)int; uv.w 0. A
+        // glyph without texels (no page) keeps its place and draws nothing.
+        const gr = c.g.rect, pk = c.g.packed;
+        c.xScale = 0;
+        if (!pk) { c.quad = null; continue; }
+        const page = c.sprite.textureSize[pk.texture];
+        if (!page) throw new UIError(`${c.sprite.name}: sprite page ${pk.texture} missing`);
+        const tw = page.width, th = page.height;
+        c.texture = pk.texture;
+        c.uv = [F((gr.m_X + pk.dx) / tw), F((gr.m_Y + pk.dy) / th), F((gr.m_X + gr.m_Width + pk.dx) / tw),
+                F((gr.m_Y + gr.m_Height + pk.dy) / th)];
+        continue;
+      }
       // uvs: glyph rect grown by padding + style padding (SaveGlyphVertexInfo), moved into the page by the packed
       // integer offset
       const gr = c.g.rect, pk = c.g.packed;
@@ -1144,25 +1283,35 @@ export class TMPText {
   // xScale), uv1 = per-glyph (0,0)..(1,1). Glyphs on atlas page k > 0 draw through TMP_SubMeshUI children with a
   // fallback material per page: draw order = material index order, index 0 the first page, the others in order of
   // first appearance in the text. Glyphs a dynamic font asset adds at run time (runtime) form one more page, indexed at
-  // their first appearance; only the paint order of overlapping quads depends on it.
-  // -> [{chars, verts (local space; UIDraw.pack with uvw), idx, texture}], after generate()
+  // their first appearance; only the paint order of overlapping quads depends on it. Sprites draw through the sprite
+  // asset's material (a sub mesh of their own, indexed at the first sprite): uv0 = (u, v, 0, 0), uv1 = (0, 0)
+  // (FillSpriteVertexBuffers).
+  // -> [{kind ("text" | "sprite"), material (the text material, or the sprite asset's), chars, verts (local space;
+  // UIDraw.pack with uvw), idx, texture}], after generate()
   meshes() {
     this.generate();
     const groups = new Map([[0, []]]);
     for (const c of this.chars) {
-      const key = c.g.runtime ? "runtime" : (c.g.atlasIndex || 0);
+      const key = c.sprite ? `sprite ${c.sprite.name}` : c.g.runtime ? "runtime" : (c.g.atlasIndex || 0);
       if (!groups.has(key)) groups.set(key, []);
       if (c.visible && c.quad) groups.get(key).push(c);
     }
     const out = [];
-    for (const chars of groups.values()) {
+    for (const [key, chars] of groups) {
+      const sprite = typeof key === "string" && key.startsWith("sprite ");
       const verts = [], idx = [];
       for (const c of chars) {
         const [bl, tl, tr, br] = c.quadCorners, [u0, v0, u1, v1] = c.uv, s = verts.length;
-        verts.push({ x: bl[0], y: bl[1], c: c.color, u: u0, v: v0, w: c.xScale, u1: 0, v1: 0 },
-                   { x: tl[0], y: tl[1], c: c.color, u: u0, v: v1, w: c.xScale, u1: 0, v1: 1 },
-                   { x: tr[0], y: tr[1], c: c.color, u: u1, v: v1, w: c.xScale, u1: 1, v1: 1 },
-                   { x: br[0], y: br[1], c: c.color, u: u1, v: v0, w: c.xScale, u1: 1, v1: 0 });
+        if (sprite)
+          verts.push({ x: bl[0], y: bl[1], c: c.color, u: u0, v: v0, w: 0, u1: 0, v1: 0 },
+                     { x: tl[0], y: tl[1], c: c.color, u: u0, v: v1, w: 0, u1: 0, v1: 0 },
+                     { x: tr[0], y: tr[1], c: c.color, u: u1, v: v1, w: 0, u1: 0, v1: 0 },
+                     { x: br[0], y: br[1], c: c.color, u: u1, v: v0, w: 0, u1: 0, v1: 0 });
+        else
+          verts.push({ x: bl[0], y: bl[1], c: c.color, u: u0, v: v0, w: c.xScale, u1: 0, v1: 0 },
+                     { x: tl[0], y: tl[1], c: c.color, u: u0, v: v1, w: c.xScale, u1: 0, v1: 1 },
+                     { x: tr[0], y: tr[1], c: c.color, u: u1, v: v1, w: c.xScale, u1: 1, v1: 1 },
+                     { x: br[0], y: br[1], c: c.color, u: u1, v: v0, w: c.xScale, u1: 1, v1: 0 });
         idx.push(s, s + 1, s + 2, s + 2, s + 3, s);
       }
       let texture = chars.length ? chars[0].texture : null;
@@ -1173,7 +1322,8 @@ export class TMPText {
         for (let s = verts.length, k = 0; k < h.verts.length; k += 4, s += 4) idx.push(s, s + 1, s + 2, s + 2, s + 3, s);
         verts.push(...h.verts);
       }
-      out.push({ chars, verts, idx, texture });
+      out.push({ kind: sprite ? "sprite" : "text", material: sprite ? this.spriteAsset.material : this.materialName,
+                 chars, verts, idx, texture });
     }
     return out;
   }

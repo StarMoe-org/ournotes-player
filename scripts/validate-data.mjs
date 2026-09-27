@@ -730,7 +730,26 @@ class Story extends Chart {
     if (this.has("ui/shaders/shaders.json")) this.checkShaders("ui/shaders");
     else this.err("ui/shaders/shaders.json", "not in the manifest");
     this.checkHost();
+    this.checkCriLips(story);
     return story;
+  }
+
+  // the CRI Lips data (story.json crilips, docs/crilips.md): both files common, a float32 LE descriptor whose blocks lie
+  // inside the weights file, in a story with audio
+  checkCriLips(story) {
+    const c = story.crilips;
+    if (c === undefined || c === null) return;
+    if (this.man.audio === false) this.err("story.json", "crilips in a story without audio");
+    for (const p of [c.descriptor, c.data]) if (!has(this.common, p)) { this.err("story.json", `crilips ${p} is not a common file`); return; }
+    const d = this.doc(c.descriptor, (v) => (isObj(v) && Array.isArray(v.blocks) && isObj(v.constants) && isObj(v.frontend)
+      ? [] : ["not a CRI Lips descriptor (blocks, constants, frontend)"]));
+    if (!d) return;
+    if (d.dtype !== "float32" || d.order !== "LE") this.err(c.descriptor, `dtype ${d.dtype}, order ${d.order}: expected float32 LE`);
+    const floats = this.common[c.data].size / 4;
+    if (floats !== d.total_floats) this.err(c.data, `${this.common[c.data].size} bytes, the descriptor has ${d.total_floats} floats`);
+    for (const b of d.blocks)
+      if (!(Number.isInteger(b.offset) && Number.isInteger(b.count) && b.offset >= 0 && b.offset + b.count <= floats))
+        this.err(c.descriptor, `block ${b.name} [${b.offset}, +${b.count}) outside the ${floats} floats`);
   }
 
   // the host of an Overlay story: present exactly for playbackMode 1 with open fonts, host.json common, its kind

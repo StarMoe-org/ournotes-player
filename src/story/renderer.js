@@ -414,7 +414,7 @@ export class StoryRenderer {
       this.loop.yield("Update").then(() => res(this.rt.capture));
     }
     // UI overlay camera onto the same target
-    if (ui) { this.rt.post.bind(); ui.render({ gl, width: w, height: h }); }
+    if (ui) { this.rt.post.bind(); ui.render({ gl, width: w, height: h, target: this.rt.post }); }
     // FinalPost (FXAA at High/Best) to the canvas
     this.post.finalPost(this.rt.post, null, { width: w, height: h, fxaa: this.quality.cameraAntiAliasing, viewport: this.viewport });
   }

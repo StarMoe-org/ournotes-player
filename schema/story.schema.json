@@ -34,7 +34,16 @@
     "stills": { "$ref": "#/$defs/optionalPath" },
     "talkWindows": { "$ref": "#/$defs/optionalPath" },
     "chat": { "$ref": "#/$defs/optionalPath" },
-    "videos": { "$ref": "#/$defs/optionalPath" }
+    "videos": { "$ref": "#/$defs/optionalPath" },
+    "crilips": {
+      "description": "The CRI Lips analysis data (docs/crilips.md): the descriptor (crilips.json) and the float32 weights (crilips.bin). null (or absent in older sites) when no voice of the story reaches the CRI Lips analysis.",
+      "type": ["object", "null"],
+      "required": ["descriptor", "data"],
+      "properties": {
+        "descriptor": { "type": "string", "pattern": "^[A-Za-z0-9_][^\\\\]*\\.json$" },
+        "data": { "type": "string", "pattern": "^[A-Za-z0-9_][^\\\\]*\\.bin$" }
+      }
+    }
   },
   "$defs": {
     "path": { "type": "string", "pattern": "^[A-Za-z0-9_][^\\\\]*$" },

@@ -3,26 +3,29 @@ import { ShaderLib } from "../engine/glsl.js";
 import { GLTex } from "../engine/texture.js";
 import { Tweens } from "../engine/tween.js";
 import { UIAnimator, UIClip, UIDraw, UIError, UIImage, UINode, UISprite, UITween, uiCanvasSize } from "../engine/ugui.js";
-import { TMPText, UIGradientMod, tmpUnsupported } from "../engine/uitext.js";
+import { TMPText, UIGradientMod, tmpSpriteAsset, tmpUnsupported } from "../engine/uitext.js";
 import { ADV_CANVAS_LAYER, StoryCommandError, createStoryUILayers } from "./interfaces.js";
 import { StoryLayout } from "./ui-layout.js";
 import { StoryText, countedText, shownText } from "./ui-ruby.js";
 import { StoryTalkWindow, removeTagsWithRuby } from "./ui-talk.js";
 import { StoryLetterBox, StoryRuleTransition } from "./ui-transition.js";
+import { DualKawaseBlur, UIBlur, blurPass } from "./simple/home/blur.js";
 
 // The story's front canvas (StoryUI): UIAdvWidget/FrontCanvas with the talk windows under UIContainer/TalkView (the
-// default UIDefaultTalkWindow; UICenterTalkWindow with its centre-talk backdrop when the episode uses it), the flash,
-// rule transition cover, location caption, curtains, subtitles, front next indicator, menu entry button and video
-// buttons, episode title, plus the AdvLetterBoxCanvas bands, drawn with the game's UI shaders. The other canvases of the widget (video, still, frame) belong to their features and are not
-// built here. Generic uGUI (RectTransform, Image, CanvasGroup, canvas drawing, UI clips and tweens) is
-// engine/ugui.js, TextMesh Pro layout engine/uitext.js; the auto layout (layout groups, content size fitters) is
-// ui-layout.js, the talk window ui-talk.js, the text components and the ruby rewrite ui-ruby.js, the rule transition
-// and the letterbox ui-transition.js. The UI's timing runs on the player
-// loop with or without a GL context (gl = null: layout, geometry and timing only).
+// default UIDefaultTalkWindow; UICenterTalkWindow with its centre-talk backdrop and the UI blur (simple/home/blur.js)
+// when the episode uses it), the flash, rule transition cover, location caption, curtains, subtitles, front next
+// indicator, menu entry button and video buttons, episode title, plus the AdvLetterBoxCanvas bands, drawn with the
+// game's UI shaders. The other canvases of the widget (video, still, frame) belong to their features and are not
+// built here. Generic uGUI (RectTransform, Image, CanvasGroup, canvas drawing, UI clips and tweens) is engine/ugui.js,
+// TextMesh Pro layout engine/uitext.js; the auto layout (layout groups, content size fitters) is ui-layout.js, the
+// talk window ui-talk.js, the text components and the ruby rewrite ui-ruby.js, the rule transition and the letterbox
+// ui-transition.js. The UI's timing runs on the player loop with or without a GL context (gl = null: layout,
+// geometry and timing only).
 //
-// Data: ui/ui.json (nodes, sprites, textures, UI materials, clips, controllers, transitions, player settings), the
-// language's ui/fonts.json (font assets, glyph pages, text materials, per text node the TMP text record and its
-// localized font binding) and ui/languages.json (LanguageMode of the language).
+// Data: ui/ui.json (nodes, sprites, textures, UI materials, clips, controllers, transitions, player settings, the blur
+// pass settings with a backdrop-filter talk window), the language's ui/fonts.json (font assets, glyph pages, text
+// materials, the emoji sprite asset, per text node the TMP text record and its localized font binding) and
+// ui/languages.json (LanguageMode of the language).
 
 export const ADVUI_WIDGET = "UIAdvWidget";
 export const ADVUI_FRONT = "UIAdvWidget/FrontCanvas";
@@ -66,6 +69,9 @@ export class StoryUI {
     this.gl = gl; this.loop = loop; this.doc = doc; this.fonts = fonts; this.language = language; this.lang = lang;
     this.assets = assets; this.dir = dir;
     this._materialInstances = new Map();            // TMP_Text.fontMaterial instances: name -> text material record
+    this._spriteAssets = new Map();
+    // LocalizeManager.EmojiSpriteAsset (UIText gives it to its text; TmpTextHelper.CombineEmojiSequences' fallback)
+    this.emojiSpriteAsset = fonts.emojiSpriteAsset ? tmpSpriteAsset(this.spriteAsset(fonts.emojiSpriteAsset)) : null;
     // hierarchy order (parents first, siblings in order); the widget's other canvases are skipped with their subtrees
     const byPath = new Map(), skipped = new Set();
     for (const rec of doc.nodes) {
@@ -124,7 +130,7 @@ export class StoryUI {
         // LocalizeText.OnFontChanged, English only: enableWordWrapping = true (and overflow mode 0) unless the object's
         // name contains "nowrap" (IndexOf, ordinal ignore case)
         if (language.mode === LANGUAGE_ENGLISH && !n.name.toLowerCase().includes("nowrap")) n.text.setWrapping(1);
-        n.storyText = new StoryText(n.text, t);
+        n.storyText = new StoryText(n.text, t, this.emojiSpriteAsset);
       }
       if (r.animator) {
         const a = r.animator;
@@ -195,11 +201,24 @@ export class StoryUI {
     this._window = null;
     this._view = { playbackSpeed: 1, autoIcon: false, fastIcon: false };
     this._backdropFade = null;
+    // the UI blur (UIManager's UIBlurController and the renderer feature's pass settings, ui.json `blur`) and
+    // UIAdvWidget's blur scope (_advBlurScope, _isAdvBlurScopeForBackdrop, _isTalkLogVisible: the backlog is not
+    // opened here)
+    this.blurParams = doc.blur || null;
+    if ([...this.windows.values()].some((w) => w.talk.useBackdropFilter) && !this.blurParams)
+      throw new UIError("ui.json lacks `blur`, which a backdrop-filter talk window needs");
+    this.blur = new UIBlur(loop);
+    this._advBlurScope = null;
+    this._isAdvBlurScopeForBackdrop = false;
+    this._isTalkLogVisible = false;
     this.rule = new StoryRuleTransition(this);
     this.letterBoxView = new StoryLetterBox(this);
     this.layers = createStoryUILayers();
-    for (const w of this.windows.values()) {          // the loaded windows' initial state, not attached yet
-      w.talk.refresh();
+    // the loaded windows (AdvEpisodeResourceLoader.LoadTalkWindow: one clone per window, UIAdvTalkWindow.Init on it),
+    // not attached yet: inactive here (the game keeps the clone at the scene root, outside any canvas, until
+    // AdvTalkView.SetWindow parents it under TalkView)
+    for (const w of this.windows.values()) {
+      w.talk.init();
       this.setActive(w.node, false);
     }
     this._refresh();
@@ -220,35 +239,51 @@ export class StoryUI {
 
   material(name) { return this._materialInstances.get(name) || this.fonts.materials[name] || null; }
 
+  // a sprite asset of ui/fonts.json `spriteAssets` with the page sizes
+  spriteAsset(name) {
+    if (!this._spriteAssets.has(name)) {
+      const a = (this.fonts.spriteAssets || {})[name];
+      if (!a) throw new UIError(`sprite asset ${name} not in ui/fonts.json`);
+      this._spriteAssets.set(name, { name, ...a, textureSize: this.fonts.textures });
+    }
+    return this._spriteAssets.get(name);
+  }
+
   // Raises StoryCommandError for texts the UI cannot lay out as the game does (per text as the talk text of each talk
-  // window in the data shows it: the unsupported rich-text features after the ruby rewrite, emoji sequences,
-  // characters of the text and of its ruby readings missing from the font asset of the talk text).
+  // window in the data shows it: the unsupported rich-text features after the ruby rewrite and the emoji
+  // preprocessing, characters of the text and of its ruby readings that neither the font asset nor the sprite asset of
+  // the talk text has).
   checkTexts(texts) {
     const problems = new Set();
-    for (const w of this.windows.values()) this._checkTexts(w.part.talkText, texts, problems);
+    for (const w of this.windows.values()) this.checkNodeTexts(w.part.talkText, texts, problems);
     if (problems.size) throw new StoryCommandError(`texts the story UI cannot lay out: ${[...problems].join("; ")}`);
   }
 
-  _checkTexts(node, texts, problems) {
+  // The problems (added to the Set `problems`) of `texts` as the text component of `node` (a node with `text`, a
+  // TMPText, and `storyText`, its StoryText) would lay them out; checkTexts per talk window
+  checkNodeTexts(node, texts, problems) {
     const talk = node.text, b = node.storyText.b;
     for (const s of texts) {
       if (typeof s !== "string" || !s) continue;
-      let shown = s;
+      let shown = s, plain = removeTagsWithRuby(s);
       try {
         shown = shownText(talk, b, s);
-        countedText(talk, b, removeTagsWithRuby(s));
+        plain = countedText(talk, b, plain, this.emojiSpriteAsset);
       } catch (e) {
         if (!(e instanceof UIError)) throw e;
         problems.add(e.message);
       }
-      for (const p of tmpUnsupported(shown, { richText: talk.richText, parseCtrl: talk.parseCtrl })) problems.add(p);
+      for (const p of tmpUnsupported(shown, talk.tokenOptions())) problems.add(p);
       const f = talk.font;
       if (talk.richText && /<mark[=>\s]/i.test(shown) && !f.characters["95"])
         problems.add(`${f.name}: U+005F (the highlight glyph) not in the font data`);
-      for (const ch of removeTagsWithRuby(s)) {
+      for (const ch of plain.replace(/<sprite name="[^"]*">/g, "")) {
         const u = ch.codePointAt(0);
-        if (!f.characters[String(u)] && u !== 10 && u !== 13 && u !== 9 && u !== 0x200B)
+        if (u === 10 || u === 13 || u === 9 || u === 0x200B) continue;
+        try { talk.glyphOf(u); } catch (e) {
+          if (!(e instanceof UIError)) throw e;
           problems.add(`${f.name}: U+${u.toString(16).toUpperCase().padStart(4, "0")} not in the font data`);
+        }
       }
     }
   }
@@ -311,6 +346,7 @@ export class StoryUI {
     this._addMaterials(new Map(Object.entries(this.fonts.materials)), this.fonts.materialKeywords);
     this._addMaterials(this._materialInstances, this.fonts.materialKeywords);
     this.buf = { vao: gl.createVertexArray(), vbo: gl.createBuffer(), ibo: gl.createBuffer() };
+    if (this.blurParams) this.kawase = new DualKawaseBlur(gl, this.lib);   // the blur pass programs, compiled up front
   }
 
   // GL material records (compiled up front); an instance takes the keywords of its base material
@@ -332,6 +368,8 @@ export class StoryUI {
     for (const t of Object.values(this.solid)) gl.deleteTexture(t.glTexture);
     gl.deleteVertexArray(this.buf.vao); gl.deleteBuffer(this.buf.vbo); gl.deleteBuffer(this.buf.ibo);
     this.buf = null;
+    if (this.kawase) { this.kawase.dispose(); this.kawase = null; }
+    this.blur.dispose();
   }
 
   // ------------------------------------------------------------ layout (RectTransforms + LayoutRebuilder)
@@ -396,12 +434,11 @@ export class StoryUI {
              idx: Uint32Array.from(mesh.idx), mesh };
   }
 
-  // TextMeshProUGUI mesh per atlas page group (TMPText.meshes)
+  // TextMeshProUGUI mesh per atlas page group and the sprite sub mesh (TMPText.meshes)
   _textItems(n, alpha) {
-    const t = n.text;
-    return t.meshes().map((m) => ({ node: n, kind: "text", material: t.materialName, texture: m.texture,
-                                    verts: UIDraw.pack(m.verts, n, alpha, true), idx: Uint32Array.from(m.idx),
-                                    chars: m.chars }));
+    return n.text.meshes().map((m) => ({ node: n, kind: m.kind, material: m.material, texture: m.texture,
+                                         verts: UIDraw.pack(m.verts, n, alpha, true), idx: Uint32Array.from(m.idx),
+                                         chars: m.chars }));
   }
 
   // ------------------------------------------------------------ drawing
@@ -412,6 +449,9 @@ export class StoryUI {
     if (it.kind === "rule") sheet = this.rule.sheet(mat);
     else if (it.kind === "text")                    // glyph page: _TextureWidth/Height = the page's size
       sheet = { _MainTex: tex, _TextureWidth: tex.width, _TextureHeight: tex.height };
+    else if (it.kind === "sprite")                  // TMP_SubMeshUI of the sprites: the sprite sheet, RGBA
+      sheet = { _MainTex: tex, _MainTex_ST: [1, 1, 0, 0], _TextureSampleAdd: [0, 0, 0, 0],
+                _ClipRect: [-32767, -32767, 32767, 32767] };
     else                                            // Graphic: _TextureSampleAdd 0 for RGBA textures, _MainTex_ST unit
       sheet = { _MainTex: tex, _MainTex_ST: [1, 1, 0, 0], _TextureSampleAdd: [0, 0, 0, 0],
                 _ClipRect: [-32767, -32767, 32767, 32767] };
@@ -423,18 +463,33 @@ export class StoryUI {
     for (let k = from; k <= to; k++) for (const v of this.layers[k].views) v.render(args);
   }
 
-  // FrontCanvas onto the bound target (the post target, width x height = ADV viewport pixels). Views of the Chat ..
-  // Still layers draw first, those of the Front and Talk layers after the canvas.
-  render({ gl, width, height }) {
+  // FrontCanvas onto the bound target (the post target, width x height = ADV viewport pixels; `target` = that target,
+  // a GLTarget, which the UI blur reads and writes back). Views of the Chat .. Still layers draw first, then the UI
+  // blur while it is on, then the canvas, then the views of the Front and Talk layers.
+  render({ gl, width, height, target = null }) {
     const { W, H } = this.canvasSize(width, height);
     this.layout(W, H);
     const args = { gl, width, height, canvasWidth: W, canvasHeight: H };
     if (!this.gl) return;
     this.renderLayers(ADV_CANVAS_LAYER.Chat, ADV_CANVAS_LAYER.Still, args);
+    this._renderBlur(gl, target, width, height);
     const globals = UIDraw.globals(W, H, width, height, 4);
     gl.disable(gl.SCISSOR_TEST);
     for (const it of this.drawList(this.front)) this._draw(it, globals);
     this.renderLayers(ADV_CANVAS_LAYER.Front, ADV_CANVAS_LAYER.Talk, args);
+  }
+
+  // UIRenderPass (renderer feature pass after post-processing, on the camera that draws the UI): the canvases of the
+  // Default sorting layer, then, while UIRendererFeatureParameter.ExecBlur is set, AddFullScreenBlurPass on the camera
+  // colour in place, then the canvases of the UIBlurAbove layer (UseBlur moves the front canvas there).
+  _renderBlur(gl, target, width, height) {
+    if (!this.kawase) return;
+    const pass = blurPass(this.blurParams, this.blur.effectiveRate);
+    if (!pass) return;
+    if (!target || target.width !== width || target.height !== height)
+      throw new UIError("UI blur: render() needs the bound target, width x height");
+    this.kawase.apply(target, width, height, pass);
+    target.bind();
   }
 
   // AdvLetterBoxCanvas (ScreenSpaceOverlay, no CanvasScaler: 1 unit = 1 screen pixel) onto the default framebuffer.
@@ -567,13 +622,55 @@ export class StoryUI {
     return !!w && w.talk.useBackdropFilter && w.part.talkArea.activeSelf;
   }
 
-  // UIAdvWidget.UpdateAdvBlurAndBackdrop -> UpdateCenterTalkBackdropFilter(visible, window): DOKill on the backdrop
-  // CanvasGroup; shown: the Image colour = the window's _backdropFilterColor, then DOFade(1, 0.2) unless the alpha is
-  // already Mathf.Approximately 1; hidden: alpha 0 at once. The backdrop exists in the data whenever a window uses it.
+  // UIAdvWidget.UpdateAdvBlurAndBackdrop (after ShowTalk / HideTalk, the window swap, SyncAdvBlurScope):
+  // UpdateCenterTalkBackdropFilter; then (no widget owns the blur here: UIManager.HasWidgetBlurOwner false) with
+  // neither the backdrop nor the backlog shown the blur scope is disposed; else a scope for the other case is replaced
+  // by UIManager.UseBlur(excluded canvases: the front canvas and the backlog's with the backdrop, the backlog's alone
+  // without)
   _updateBlurAndBackdrop() {
+    const visible = this._isCenterTalkBackdropVisible();
+    this._updateCenterTalkBackdropFilter(visible);
+    if (!visible && !this._isTalkLogVisible) { this._disposeAdvBlurScope(); return; }
+    if (!this._advBlurScope || this._isAdvBlurScopeForBackdrop !== visible) {
+      this._disposeAdvBlurScope();
+      this._advBlurScope = this._useBlur(visible ? ["FrontCanvas", "TalkLogView"] : ["TalkLogView"]);
+      this._isAdvBlurScopeForBackdrop = visible;
+    }
+  }
+
+  // UIManager.UseBlur -> UIBlurController.UseBlur (no suppression): ExecBlur() (the blur on at rate 1 at once) and the
+  // excluded canvases to the UIBlurAbove sorting layer; the scope's Dispose: StopBlurIfNoWidgetOwner -> StopBlur()
+  // (off at once) and the canvases' sorting layers back. The front canvas draws after the blur either way here.
+  _useBlur(excluded) {
+    this.blur.exec(0);
+    return { excluded, dispose: () => this.blur.stop() };
+  }
+
+  // UIAdvWidget.DisposeAdvBlurScope
+  _disposeAdvBlurScope() {
+    if (this._advBlurScope) this._advBlurScope.dispose();
+    this._advBlurScope = null;
+    this._isAdvBlurScopeForBackdrop = false;
+  }
+
+  // UIAdvWidget.SyncAdvBlurScope: a scope lost to someone else's StopBlur is taken again (IsBlurActive false while
+  // CanExecBlur: the renderer feature exists, no suppression, no glass morphism)
+  _syncAdvBlurScope() {
+    if (!this.blurParams || this.blur.enabled) return;
+    if (!this._advBlurScope) {
+      if (this._isCenterTalkBackdropVisible() || this._isTalkLogVisible) this._updateBlurAndBackdrop();
+    } else {
+      this._disposeAdvBlurScope();
+      this._updateBlurAndBackdrop();
+    }
+  }
+
+  // UIAdvWidget.UpdateCenterTalkBackdropFilter(visible, window): DOKill on the backdrop CanvasGroup; shown: the Image
+  // colour = the window's _backdropFilterColor, then DOFade(1, 0.2) unless the alpha is already Mathf.Approximately 1;
+  // hidden: alpha 0 at once. The backdrop exists in the data whenever a window uses it.
+  _updateCenterTalkBackdropFilter(visible) {
     const b = this.part.centerTalkBackdrop;
     if (!b) return;
-    const visible = this._isCenterTalkBackdropVisible();
     if (this._backdropFade) { this._backdropFade.kill(); this._backdropFade = null; }
     const cg = b.canvasGroup;
     if (!visible) { cg.alpha = 0; return; }
@@ -585,8 +682,11 @@ export class StoryUI {
                                                     ease: this.doc.dotween.defaultEaseType, apply: (v) => { cg.alpha = v; } });
   }
 
-  // UIAdvWidget.ResetAdvBlurAndBackdrop: DOKill on the backdrop CanvasGroup, alpha 0
+  // UIAdvWidget.ResetAdvBlurAndBackdrop: DisposeAdvBlurScope, backlog not shown, DOKill on the backdrop CanvasGroup
+  // and alpha 0
   _resetBlurAndBackdrop() {
+    this._disposeAdvBlurScope();
+    this._isTalkLogVisible = false;
     const b = this.part.centerTalkBackdrop;
     if (this._backdropFade) { this._backdropFade.kill(); this._backdropFade = null; }
     if (b) b.canvasGroup.alpha = 0;
@@ -759,9 +859,10 @@ export class StoryUI {
   fadeIn(settings, color, dur) { return this.rule.animate(settings, color, dur, -1, 1, true); }
   fadeInLetterBox() { return this.letterBoxView.fadeIn(); }
 
-  // UIAdvWidget.OnUpdated (GameMain.Update chain) -> UpdateLetterBoxFade
+  // UIAdvWidget.OnUpdated (GameMain.Update chain): UpdateLetterBoxFade, SyncAdvBlurScope; then the layer views
   _onUpdated(dt) {
     this.letterBoxView.updateFade(dt);
+    this._syncAdvBlurScope();
     for (let k = 0; k < this.layers.length; k++) for (const v of this.layers[k].views) if (v.update) v.update(dt);
   }
 

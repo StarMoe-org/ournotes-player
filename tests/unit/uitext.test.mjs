@@ -255,6 +255,72 @@ test("layout is deterministic", () => {
   assert.deepEqual(JSON.stringify(a.meshes()), JSON.stringify(b.meshes()));
 });
 
+// a sprite asset without face info (point size 0): 32 x 32 glyphs, bearing (0, 28.8), advance 32, on a 512 x 512 sheet;
+// U+1F600 twice in the table (the first counts), U+1F602 without its glyph (left out), U+1F603 without texels
+const EMOJI = "\u{1F600}";
+const spriteGlyph = (x, y, packed = true) => ({
+  metrics: { m_Width: 32, m_Height: 32, m_HorizontalBearingX: 0, m_HorizontalBearingY: F(28.8), m_HorizontalAdvance: 32 },
+  rect: packed ? { m_X: x, m_Y: y, m_Width: 32, m_Height: 32 } : { m_X: 0, m_Y: 0, m_Width: 0, m_Height: 0 }, scale: 1, atlasIndex: 0,
+  ...(packed ? { packed: { texture: "sheet", dx: 0, dy: 0 } } : {}),
+});
+const zeroFace = { m_PointSize: 0, m_Scale: 0, m_LineHeight: 0, m_AscentLine: 0, m_DescentLine: 0, m_Baseline: 0 };
+const spriteAsset = (faceInfo = zeroFace) => ({
+  name: "Emoji", faceInfo, material: "Emoji Material", textureSize: { sheet: { width: 512, height: 512 } },
+  characters: [{ index: 0, unicode: 0x1F600, name: "1f600", glyph: 0, scale: 1 },
+               { index: 1, unicode: 0x1F600, name: "1f600-b", glyph: 1, scale: 1 },
+               { index: 2, unicode: 0x1F602, name: "1f602", glyph: 9, scale: 1 },
+               { index: 3, unicode: 0x1F603, name: "1f603", glyph: 2, scale: 1 }],
+  glyphs: { 0: spriteGlyph(32, 480), 1: spriteGlyph(64, 480), 2: spriteGlyph(0, 0, false) },
+});
+const spriteText = (text, over = {}, sa = spriteAsset()) => {
+  const h = { ...host, spriteAsset: () => sa, material: (n) => (n === "Emoji Material" ? { material: n } : material) };
+  const t = new TMPText(h, { path: "Test/Text", rect: { x: 0, y: -200, w: 1000, h: 200 } },
+                        record({ spriteAsset: "Emoji", m_tintAllSprites: 0, ...over }));
+  t.setText(text);
+  t.generate();
+  return t;
+};
+
+test("sprites: characters the font lacks from the sprite asset, scaled by the font face without a sprite face", () => {
+  const t = spriteText(`A${EMOJI}B`), [a, e, b] = t.chars;
+  assert.equal(e.sprite.name, "Emoji"); assert.equal(e.g.rect.m_X, 32, "the first character with the code point");
+  const fontScale = F(0.36), scale = F(fontScale * F(90 / 32)), delta = F(fontScale / scale);
+  assert.equal(e.scale, scale);
+  assert.equal(e.x0, a.xAdvance);                               // bearing 0, no padding
+  assert.equal(e.x1, F(e.x0 + F(32 * scale)));
+  assert.equal(F(e.y1 - e.y0), F(32 * scale));
+  assert.equal(e.ascender, F(scale * F(90 * delta))); assert.equal(e.descender, F(scale * F(delta * -30)));
+  assert.equal(e.xAdvance, F(a.xAdvance + F(32 * scale)));      // no bold spacing, no kerning
+  assert.equal(b.x0, F(e.xAdvance + F(F(5 - 1.25) * 0.36)));   // the glyph after: its material padding 1.25
+  assert.deepEqual(e.uv, [F(32 / 512), F(480 / 512), F(64 / 512), 1]);
+  assert.equal(e.xScale, 0);
+  close(t.preferredWidth(), 75.61, 0.011);                      // 21.6 + 32.4 + 21.6
+  assert.throws(() => spriteText("\u{1F602}"), /not in the font data/, "a character whose glyph the asset lacks is left out");
+});
+
+test("sprites: white with the font colour's alpha (untinted), own sub mesh after the glyphs, empty glyphs keep their place", () => {
+  const t = spriteText(`<color=#FF000080>A${EMOJI}</color>\u{1F603}B`, { m_fontColor: { r: 1, g: 1, b: 1, a: 0.5 } });
+  assert.deepEqual(t.chars[1].color, [255, 255, 255, 128]);
+  assert.deepEqual(t.chars[0].color, [255, 0, 0, 128]);
+  const ms = t.meshes();
+  assert.deepEqual(ms.map((m) => [m.kind, m.material, m.texture, m.verts.length]),
+                   [["text", "Test - Default", "page0", 8], ["sprite", "Emoji Material", "sheet", 4]]);
+  assert.deepEqual(ms[1].verts.map((v) => [v.w, v.u1, v.v1]), [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const empty = t.chars[2];
+  assert.equal(empty.visible, true); assert.equal(empty.quad, null);
+  assert.equal(t.chars[3].x0, F(F(t.chars[1].xAdvance + F(32 * t.chars[2].scale)) + F(F(5 - 1.25) * 0.36)));
+  assert.throws(() => spriteText("A", { m_tintAllSprites: 1 }), /tinted sprites/);
+});
+
+test("sprites with a sprite face: its scale, baseline and lines", () => {
+  const face = { m_PointSize: 32, m_Scale: 1.5, m_LineHeight: 40, m_AscentLine: 30, m_DescentLine: -8, m_Baseline: 2 };
+  const e = spriteText(EMOJI, {}, spriteAsset(face)).chars[0];
+  const scale = F(F(36 / 32) * 1.5);
+  assert.equal(e.scale, scale);
+  assert.equal(e.ascender, F(scale * 30)); assert.equal(e.descender, F(scale * -8));
+  assert.equal(e.y1, F(F(F(F(0.36) * 2) * 1.5) + F(F(28.8) * scale)), "the sprite face baseline, by the font scale");
+});
+
 test("<mark>: highlight runs from the characters' bounds, colours, state changes, line ends, visibility", () => {
   const a = make("<mark=#FF000080>AB</mark>C");
   assert.equal(a.highlights.length, 1);

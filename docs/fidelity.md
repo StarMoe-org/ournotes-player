@@ -216,6 +216,8 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 - Unity's noise field is native (function, per-axis offsets, seed, range, octave normalisation); gradient noise here.
 - Unity derives these from the particle's randomSeed with module offsets; separate factors per axis here.
 - stream packing follows the renderer inspector ("UV (TEXCOORD0.xy)", "Custom1.x (TEXCOORD0.z)").
+- the renderer takes Local alignment for View and Facing under Align To Direction; the editor offers only World
+- the native turn is not documented; LookRotation with the world up in the system frame is assumed.
 - isPlaying stays true while a stopped system still has live particles (observed engine behaviour).
 - a sub-emitter advances by its parent's simulated time (its own simulationSpeed is not applied).
 - Play on a playing system does nothing; on a stopping / finished one it restarts at time 0, keeping particles.
@@ -383,6 +385,11 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 - Mesh.RecalculateBounds is native; centre = (max + min) * 0.5, extents = (max - min) * 0.5 in float32.
 - a clip playable created in Update is first sampled after one advance (at t = deltaTime x speed).
 
+**`src/live2d/crilips/index.js`**
+
+- the game renders audio (and so analyses it) slightly ahead of what is audible; the player
+- when the page's AudioContext sample rate differs from the game's 48 kHz, the analyzer is
+
 **`src/live2d/drawing.js`**
 
 - the values bound for a mesh's missing NORMAL / TANGENT channels are native; (0, 0, 1, 0) / (1, 0, 0, 1) here.
@@ -426,15 +433,16 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 
 **`src/story/features/canvas.js`**
 
+- GetInnerUV is the texture rect less the border in texture uvs; for a trimmed sprite that is the packed
 - Mecanim writes a bool property (GameObject.m_IsActive, Behaviour.m_Enabled) from its float curve as
 - a state whose motion is missing or has zero length advances its normalized time as if one second long.
 - a RectTransform under a plain Transform is laid out against a zero-size parent rect at the Transform's
 
 **`src/story/features/chat.js`**
 
-- VerticalLayoutGroup / ContentSizeFitter / ScrollRect / SoftMask layout and TMP text are not modelled, so the
 - .NET StringInfo text elements; Intl.Segmenter grapheme clusters stand in for them.
-- the serialized rects stand in for the layout groups' results.
+- without the story UI's chat data (no layout) the RectTransforms are read as serialized.
+- GetComponentsInChildren is native; without includeInactive the nodes active up to the searched object count
 
 **`src/story/features/dotween-core.js`**
 
@@ -470,6 +478,13 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 
 - with HDR and post-process alpha output allowed URP picks R16G16B16A16_SFloat for the colour target; UI
 
+**`src/story/features/uiparticle.js`**
+
+- the UI camera's world placement is not in the data; the origin with no rotation stands for it. Only
+- activating a hierarchy wakes its native components before its scripts, so the systems already play (Play on
+- activity is sampled once per drawn frame; a GameObject turned off and on again between two draws counts as
+- CanvasRenderer multiplies the vertex alpha by the inherited CanvasGroup alpha; CombineMeshes transforms the
+
 **`src/story/features/video.js`**
 
 - CRI Mana decodes and clocks the movie by its audio track. Here a video is prepared at once, starts playing on
@@ -497,6 +512,10 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 
 **`src/story/simple/home/host.js`**
 
+- PlatformAutoDetect.ShAutoDetect gives PerVertex for Auto on a mobile shader API (GLES3); UniversalRenderer
+- the ambient probe of a Flat ambient is built natively from the ambient colour; a white Flat ambient is taken as
+- the default reflection of a Skybox-mode scene without a skybox material (and without a custom cube) is taken
+- unity_LightData (native per-object light data): x the offset of the per-object light indices (0), y their
 - atlas page texture import settings are not in the data; bilinear, clamped, no mipmaps here.
 - a Skybox clear without a skybox material clears to the background colour.
 
@@ -512,6 +531,11 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 **`src/story/simple/ui.js`**
 
 - CrossFade to a missing state is native: Unity logs "State could not be found" and changes nothing.
+
+**`src/story/ui-chat.js`**
+
+- Sprites.DataUtility.GetInnerUV is native; for a tight-packed (trimmed) sprite the inner rect is taken as the
+- the uGUI ScrollRect (UpdateBounds, normalizedPosition, SetNormalizedPosition, LateUpdate / CalculateOffset).
 
 **`src/story/ui-layout.js`**
 

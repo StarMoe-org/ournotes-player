@@ -313,3 +313,34 @@ test("mesh shape: vertices, edges and triangle surface, emitted along the normal
   const missing = make({ extra: meshShape(2, { m_Mesh: null }) });
   assert.throws(() => missing.fastForward(0.1, false, true, false), /without mesh data/);
 });
+
+test("shape alignToDirection: Local render alignment with each particle turned to its initial direction", () => {
+  const shape = (o = {}) => ({ ShapeModule: { ...psRaw().ShapeModule, enabled: 1, type: 5, m_Scale: v3(0, 0, 0),
+                                              m_Rotation: v3(0, 90, 0), alignToDirection: 1, ...o } });
+  const quad = (o, r = {}, M = mat4.identity()) => {
+    const s = make({ rate: 0, bursts: [burst(1)], extra: shape(o) }, r, M);
+    s.fastForward(0.1, false, true, false);
+    return s;
+  };
+  // the box emits along +Z turned to +X by the shape rotation: the quad's z axis is +X, its x axis -Z, its y axis +Y
+  const s = quad();
+  assert.equal(s.renderer.alignment, 2);
+  nearAll(worldOf(s), [[0, -0.5, 0.5], [0, -0.5, -0.5], [0, 0.5, -0.5], [0, 0.5, 0.5]]);
+  const b = s.bake(cam), [, no] = b.attribs.in_NORMAL0;
+  for (let i = 0; i < b.verts.length; i += b.stride) nearAll([[b.verts[i + no], b.verts[i + no + 1], b.verts[i + no + 2]]], [[-1, 0, 0]]);
+  // turned with the system (Local alignment): the quad's z axis is the system's +X, world -Z, so it is seen from behind
+  nearAll(worldOf(quad({}, {}, yaw90)), [[0.5, -0.5, 0], [-0.5, -0.5, 0], [-0.5, 0.5, 0], [0.5, 0.5, 0]]);
+  // the start rotation turns the quad about the particle's z axis
+  const spun = make({ rate: 0, bursts: [burst(1)], extra: { ...shape(), InitialModule: { ...psRaw().InitialModule, startRotation: mm(Math.PI / 2) } } });
+  spun.fastForward(0.1, false, true, false);
+  nearAll(worldOf(spun), [[0, 0.5, 0.5], [0, -0.5, 0.5], [0, -0.5, -0.5], [0, 0.5, -0.5]]);
+  // without the option the quad faces the camera
+  nearAll(worldOf(quad({ alignToDirection: 0 })), [[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]]);
+  // a direction along y keeps the particle's x axis on x
+  nearAll(worldOf(quad({ m_Rotation: v3(-90, 0, 0) })), [[-0.5, 0, 0.5], [0.5, 0, 0.5], [0.5, 0, -0.5], [-0.5, 0, -0.5]]);
+  // World render alignment, other render modes and 3D rotation are not implemented
+  assert.throws(() => quad({}, { extra: { m_RenderAlignment: 1 } }).geometry(cam), /World render alignment/);
+  assert.throws(() => quad({}, { mode: 1 }).geometry(cam), /render mode 1/);
+  const r3 = make({ rate: 0, bursts: [burst(1)], extra: { ...shape(), InitialModule: { ...psRaw().InitialModule, rotation3D: 1 } } });
+  assert.throws(() => r3.fastForward(0.1, false, true, false), /alignToDirection with 3D rotation/);
+});

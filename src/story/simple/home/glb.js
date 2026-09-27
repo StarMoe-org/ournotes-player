@@ -4,7 +4,8 @@
 // The room file bakes every drawn MeshRenderer of the background prefab into the prefab's space and writes it as glTF:
 // z negated (Unity's left-handed space to glTF's right-handed one), each triangle's winding reversed and the uv v
 // flipped (glTF's top-left texture origin). roomMeshes() undoes the three so that the game's own shaders draw the
-// meshes with Unity's matrices, front-face convention and bottom-left texture origin. Nodes carry no transform;
+// meshes with Unity's matrices, front-face convention and bottom-left texture origin. Normals, when the mesh has them,
+// are baked the same way (the prefab-space normal matrix, normalized, z negated). Nodes carry no transform;
 // `extras.unityActive` is the object's activeInHierarchy in the prefab.
 
 const GLB_MAGIC = 0x46546c67;             // "glTF"
@@ -64,7 +65,7 @@ export const readAccessor = (glb, index) => {
   return out;
 };
 
-// glTF -> Unity: z negated
+// glTF -> Unity: z negated (positions and normals)
 const unityPositions = (p) => {
   const out = new Float32Array(p.length);
   for (let i = 0; i < p.length; i += 3) { out[i] = p[i]; out[i + 1] = p[i + 1]; out[i + 2] = -p[i + 2]; }
@@ -93,9 +94,10 @@ const unityBounds = (a) => {
   return { min, max, center: { x: (min.x + max.x) / 2, y: (min.y + max.y) / 2, z: (min.z + max.z) / 2 } };
 };
 
-// Per node in glb order: {name, active, bounds, primitives: [{positions, uvs, indices, material, vertexCount}]}, all in
-// Unity space. Primitives of one mesh share their position / uv arrays (one submesh each, as the room file writes
-// them). `bounds` is the box of the node's positions (the room's nodes have no transform, so it is prefab space).
+// Per node in glb order: {name, active, bounds, primitives: [{positions, uvs, normals, indices, material, vertexCount}]},
+// all in Unity space; `normals` is null for a mesh without them. Primitives of one mesh share their position / uv /
+// normal arrays (one submesh each, as the room file writes them). `bounds` is the box of the node's positions (the
+// room's nodes have no transform, so it is prefab space).
 export const roomMeshes = (glb) => {
   const J = glb.json, conv = new Map();
   const once = (index, fn) => {
@@ -115,9 +117,12 @@ export const roomMeshes = (glb) => {
         throw new Error(`glb: ${mesh.name} primitive ${k} lacks POSITION / TEXCOORD_0 / indices`);
       const b = unityBounds(J.accessors[pos]);
       if (b) bounds = bounds ? mergeBounds(bounds, b) : b;
-      const positions = once(pos, unityPositions);
-      return { positions, uvs: once(uv, unityUvs), indices: unityIndices(readAccessor(glb, p.indices)),
-               material: p.material ?? null, vertexCount: positions.length / 3, positionAccessor: pos, uvAccessor: uv };
+      const positions = once(pos, unityPositions), nrm = p.attributes.NORMAL;
+      const normals = nrm === undefined ? null : once(nrm, unityPositions);
+      if (normals && normals.length !== positions.length) throw new Error(`glb: ${mesh.name} primitive ${k}: NORMAL count differs from POSITION`);
+      return { positions, uvs: once(uv, unityUvs), normals, indices: unityIndices(readAccessor(glb, p.indices)),
+               material: p.material ?? null, vertexCount: positions.length / 3, positionAccessor: pos, uvAccessor: uv,
+               normalAccessor: nrm ?? null };
     });
     const extras = node.extras || {};
     return { name: node.name ?? mesh.name, active: extras.unityActive !== false, bounds, primitives };

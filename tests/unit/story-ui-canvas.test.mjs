@@ -57,6 +57,7 @@ const withCenter = (doc) => {
   doc.nodes.splice(i, 0, ...centerNodes());
   const f = doc.nodes.findIndex((n) => n.path === `${F0}/FlashView`);
   doc.nodes.splice(f, 0, node(`${F0}/CenterTalkBackdrop`, { image: { ...image(), m_Color: { r: 0, g: 0, b: 0, a: F(0.4) } }, canvasGroup: group(0) }));
+  doc.blur = { renderer: "R", active: true, iterations: 3, offset: 1, downsample: 1, blendRateMax: F(0.3), shader: "Hidden/UI/DualKawaseBlur" };
   return doc;
 };
 const uiDoc = () => ({
@@ -222,15 +223,16 @@ const create = ({ mode = 2, lang = "zh-Hant", koAdjust = null, doc = uiDoc(), fo
 const Win = (ui, name = "UIDefaultTalkWindow") => ui.windows.get(name).part;
 
 // ------------------------------------------------------------------------------------------------ tests
-test("StoryUI contract and the state after Refresh", () => {
+test("StoryUI contract, the state after Refresh and the loaded window before and after its attach", () => {
   const { ui } = create({ attach: false });
   checkStoryUI(ui);
   assert.deepEqual(ui.talkWindows, ["UIDefaultTalkWindow"]);
   const P = ui.part, D = Win(ui);
   assert.equal(D.talkArea.activeSelf, false); assert.equal(P.location.activeSelf, false);
   assert.equal(P.title.activeSelf, false); assert.equal(P.rule.activeSelf, false);
-  assert.equal(D.background.canvasGroup.alpha, 0);                       // HideTalk(0)
-  assert.equal(D.speaker.activeSelf, false);
+  // a loaded window before its attach: UIAdvTalkWindow.Init only (TalkArea off), the rest as in the prefab
+  assert.equal(D.background.canvasGroup.alpha, 1); assert.equal(D.speaker.activeSelf, true);
+  assert.equal(D.window.activeSelf, false);
   assert.equal(P.flash.activeSelf, false); assert.equal(P.subtitles.activeSelf, false);
   assert.equal(P.frontNextIndicator.activeSelf, false); assert.equal(P.videoButtonParent.activeSelf, false);
   assert.equal(ui.nodes.has("UIAdvWidget/VideoCanvas"), false);          // the widget's other canvases are not built
@@ -242,6 +244,8 @@ test("StoryUI contract and the state after Refresh", () => {
   assert.equal(ui.talk, null);
   ui.setTalkWindow("UIDefaultTalkWindow");
   assert.equal(D.window.activeSelf, true);
+  assert.equal(D.background.canvasGroup.alpha, 0);                       // the first attach: HideTalk(0)
+  assert.equal(D.speaker.activeSelf, true);                              // until the first SetSpeakerName
   assert.deepEqual(ui.drawList(ui.front).map((it) => it.node.name), ["TalkBackground"]);   // at alpha 0
   const sh = ui.talkShakeTarget();
   sh.set({ x: 3, y: -2, z: 0 });
@@ -398,7 +402,41 @@ test("checkTexts refuses what the UI cannot lay out", () => {
   assert.throws(() => ui.checkTexts(["<mark=#FF0000>A"]), /U\+005F/);             // no highlight glyph in the font
   assert.throws(() => ui.checkTexts(["<r=よ>A</r>"]), /not in the font data/);  // the reading's glyphs too
   assert.throws(() => ui.checkTexts(["Ω"]), /not in the font data/);
-  assert.throws(() => ui.checkTexts(["A\u200DB"]), /emoji sequences/);
+  assert.throws(() => ui.checkTexts(["A\u200DB"]), /U\+200D not in the font data/);   // no sprite asset: a character
+});
+
+// the emoji sprite asset UIText gives the talk text: U+1F600 by code point, the sequence U+2764 U+FE0F by its sprite
+const withEmoji = (fonts) => {
+  const metrics = { m_Width: 32, m_Height: 32, m_HorizontalBearingX: 0, m_HorizontalBearingY: F(28.8), m_HorizontalAdvance: 32 };
+  const glyph = (x) => ({ metrics, rect: { m_X: x, m_Y: 0, m_Width: 32, m_Height: 32 }, scale: 1, atlasIndex: 0,
+                          packed: { texture: "sprites", dx: 0, dy: 0 } });
+  fonts.spriteAssets = { Emoji: {
+    faceInfo: { m_PointSize: 0, m_Scale: 0, m_AscentLine: 0, m_DescentLine: 0, m_Baseline: 0 }, material: "Emoji Material",
+    characters: [{ index: 0, unicode: 0x1F600, name: "1f600", glyph: 0, scale: 1 },
+                 { index: 5, unicode: 0x2764, name: "2764-fe0f", glyph: 5, scale: 1 }],
+    glyphs: { 0: glyph(0), 5: glyph(32) }, sequences: [{ name: "2764-fe0f", unicode: 0x2764 }] } };
+  fonts.emojiSpriteAsset = "Emoji";
+  fonts.textures.sprites = { texture: "fonts/sprites.png", width: 64, height: 32, mipCount: 1 };
+  fonts.materials["Emoji Material"] = { material: "Emoji Material", shader: { shader: "TextMeshPro/Sprite" }, keywords: [],
+                                        floats: {}, colors: {} };
+  fonts.materialKeywords["Emoji Material"] = [];
+  fonts.texts[`${K}/TalkText`] = { ...fonts.texts[`${K}/TalkText`], spriteAsset: "Emoji", m_tintAllSprites: 0 };
+  return fonts;
+};
+
+test("emoji: the talk text draws what its font lacks from the sprite asset, sequences through the preprocessor", () => {
+  const { ui } = create({ fonts: withEmoji(fontsDoc()) });
+  ui.checkTexts(["A\u{1F600}", "B\u2764\uFE0F"]);
+  assert.throws(() => ui.checkTexts(["\u{1F601}"]), /U\+1F601 not in the font data/);
+  const n = ui.nodes.get(`${K}/TalkText`);
+  n.storyText.setText("A\u2764\uFE0F\u{1F600}");
+  assert.equal(n.text.text, "A<sprite name=\"2764-fe0f\">\u{1F600}", "TMP_EmojiTextUGUI.PreprocessText");
+  assert.deepEqual(n.text.elements.map((e) => [e.u, e.sprite ? e.index : null]), [[0x41, null], [0xE005, 5], [0x1F600, 0]]);
+  ui.layout(2340, 1080);
+  const items = ui._textItems(n, 1);
+  assert.deepEqual(items.map((it) => [it.kind, it.material, it.texture, it.idx.length]),
+                   [["text", "Test - Default", "page0", 6], ["sprite", "Emoji Material", "sprites", 12]]);
+  assert.equal(ui.emojiSpriteAsset.name, "Emoji");
 });
 
 test("Single.ToString as String.Format writes the ruby floats", () => {
@@ -609,4 +647,65 @@ test("centre talk window: a long line wraps at the content width and the text bo
   close(y1 - y0, t.preferredHeight(), 1e-3);
   assert.ok(t.preferredHeight() > 80);
   close((y0 + y1) / 2, 540, 1e-3);
+});
+
+test("centre talk window: the swap carries the TMP text of the talk (the ruby rewrite), not the line", () => {
+  const { ui } = create({ doc: withCenter(uiDoc()), fonts: withCenterFonts(fontsDoc()) });
+  const D = Win(ui), X = Win(ui, "UICenterTalkWindow");
+  ui.showTalk(0);
+  ui.setTalk("<r=一二>三</r>A");
+  const shown = D.talkText.text.text;
+  assert.notEqual(shown, "<r=一二>三</r>A");                               // rewritten into TMP markup
+  assert.equal(D.talkText.storyText.getText(), shown);                     // UIRubyText.GetText = TMP_Text.text
+  assert.equal(D.talkText.text.margin.y, -22);                            // a ruby in the first line
+  ui.setTalkWindow("UICenterTalkWindow");
+  // ApplyData: SetText(the rewritten text): no ruby tag left, so the margin is the one captured at Awake
+  assert.equal(X.talkText.storyText.getText(), shown);
+  assert.equal(X.talkText.text.text, shown);
+  assert.equal(X.talkText.text.margin.y, 0);
+});
+
+test("centre talk window: the UI blur is on (rate 1 at once) while its talk area is shown, off when hidden", async () => {
+  const { ui, step } = create({ doc: withCenter(uiDoc()), fonts: withCenterFonts(fontsDoc()) });
+  assert.equal(ui.blur.enabled, false);
+  ui.showTalk(0);                                                         // the default window: no backdrop filter
+  assert.equal(ui.blur.enabled, false); assert.equal(ui._advBlurScope, null);
+  ui.setTalkWindow("UICenterTalkWindow");                                 // talk area shown: UseBlur
+  assert.equal(ui.blur.enabled, true); assert.equal(ui.blur.effectiveRate, 1);
+  assert.deepEqual(ui._advBlurScope.excluded, ["FrontCanvas", "TalkLogView"]);
+  const scope = ui._advBlurScope;
+  ui.showTalk();                                                          // same case: the scope is kept
+  assert.equal(ui._advBlurScope, scope);
+  await step(3);
+  assert.equal(ui.blur.effectiveRate, 1);
+  ui.blur.stop();                                                         // a StopBlur from elsewhere:
+  await step();                                                           // SyncAdvBlurScope takes a new scope
+  assert.equal(ui.blur.enabled, true); assert.notEqual(ui._advBlurScope, scope);
+  ui.hideTalk();                                                          // DisposeAdvBlurScope: StopBlur at once
+  assert.equal(ui.blur.enabled, false); assert.equal(ui.blur.effectiveRate, 0); assert.equal(ui._advBlurScope, null);
+  ui.showTalk(0);
+  assert.equal(ui.blur.enabled, true);
+  ui.setTalkWindow("UIDefaultTalkWindow");                                // the swap leaves the backdrop window
+  assert.equal(ui.blur.enabled, false);
+  // a centre window without the blur settings in the data is refused
+  const doc = withCenter(uiDoc()); delete doc.blur;
+  assert.throws(() => create({ doc, fonts: withCenterFonts(fontsDoc()) }), /lacks `blur`/);
+});
+
+test("centre talk window: the blur pass runs on the render target while the blur is on", () => {
+  const { ui } = create({ doc: withCenter(uiDoc()), fonts: withCenterFonts(fontsDoc()) });
+  const calls = [];
+  ui.kawase = { apply: (t, w, h, pass) => calls.push({ t, w, h, pass }) };            // the Dual Kawase chain
+  const target = { width: 1170, height: 540, bound: 0, bind() { this.bound++; } };
+  ui._renderBlur(null, target, 1170, 540);
+  assert.equal(calls.length, 0);                                          // blur off: no pass
+  ui.setTalkWindow("UICenterTalkWindow"); ui.showTalk(0);
+  ui._renderBlur(null, target, 1170, 540);
+  // UIRenderPass.Setup / AddBlur at rate 1: 3 iterations, downsample 1, offset 1 x 1, blend rate clamp01(1 / 0.3) = 1
+  assert.deepEqual(calls[0].pass, { iterations: 3, downsample: 1, offset: 1, blendRate: 1 });
+  assert.equal(calls[0].t, target); assert.equal(target.bound, 1);        // the target bound again for the canvas
+  assert.throws(() => ui._renderBlur(null, null, 1170, 540), /needs the bound target/);
+  ui.hideTalk();
+  ui._renderBlur(null, target, 1170, 540);
+  assert.equal(calls.length, 1);
 });

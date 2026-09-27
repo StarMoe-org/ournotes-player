@@ -54,11 +54,54 @@ const chatDoc = (opts) => ({ chats: { 100: { _id: 100, _chatSoundId: 51, _inOutS
                                       200: { _id: 200, _chatSoundId: 0, _inOutSoundId: 0, _chatWindowAssetName: "", _chatIconAssetName: "icon200" } },
                              windows: { [W]: windowDoc(opts) }, icons: { icon100: {}, icon200: {} }, stamps: { "stamp/s1": {} } });
 
-const makePlayer = (rows, { auto = false, doc = chatDoc() } = {}) => {
+// The laid-out phone: a window whose timelines are ScrollRects over VerticalLayoutGroup / ContentSizeFitter contents
+// (bubbles 200 tall, spacing 5, padding 30), a lock timeline pre-filled with three nodes, and the widget record.
+const comp = (cls, f = {}) => ({ type: "MonoBehaviour", class: cls, m_Enabled: 1, ...f });
+const scrollRect = (content, viewport) => comp("ScrollRect", { m_Horizontal: 0, m_Vertical: 1, m_MovementType: 2, m_HorizontalScrollbar: null,
+  m_VerticalScrollbar: null, m_Content: { transform: `${W}${content}` }, m_Viewport: { transform: `${W}${viewport}` } });
+const vlg = comp("VerticalLayoutGroup", { m_Padding: { m_Left: 0, m_Right: 0, m_Top: 30, m_Bottom: 30 }, m_Spacing: 5, m_ChildAlignment: 0,
+  m_ChildControlWidth: 1, m_ChildControlHeight: 1, m_ChildForceExpandWidth: 1, m_ChildForceExpandHeight: 0, m_ChildScaleWidth: 0,
+  m_ChildScaleHeight: 0, m_ReverseArrangement: 0 });
+const csf = comp("ContentSizeFitter", { m_HorizontalFit: 0, m_VerticalFit: 2 });
+const le = comp("LayoutElement", { m_IgnoreLayout: 0, m_MinWidth: -1, m_MinHeight: -1, m_PreferredWidth: -1, m_PreferredHeight: 200,
+  m_FlexibleWidth: -1, m_FlexibleHeight: -1, m_LayoutPriority: 1 });
+const topStretch = rect({ x: 0, y: 1 }, { x: 1, y: 1 }, { x: 0, y: 0 }, { x: 0, y: 0 }, TOP);
+const bubble = (path, my) => node(path, rect(TOP, TOP, { x: 0, y: 0 }, { x: 600, y: 100 }, TOP), [comp(my ? "AdvMyChatNode" : "AdvOtherChatNode"), le]);
+const phoneWindowDoc = () => {
+  const d = windowDoc();
+  const main = "/Mask/Scroll View", lock = "/Mask/LockScreen/SVLock";
+  Object.assign(d.nodes[0].components[0], { _scrollRect: ref(main, "ScrollRect"), _lockScrollRect: ref(lock, "ScrollRect"),
+                                            _typingContentText: null });
+  d.nodes = [d.nodes[0], node("/Mask"),
+    node(main, FULL, [scrollRect(`${main}/Viewport/Content`, `${main}/Viewport`)]), node(`${main}/Viewport`),
+    node(`${main}/Viewport/Content`, topStretch, [vlg, csf]),
+    bubble(`${main}/Viewport/Content/MyChatNode`, true), bubble(`${main}/Viewport/Content/OtherChatNode`, false),
+    node("/Mask/LockScreen", FULL, [], false), node(lock, FULL, [scrollRect(`${lock}/Viewport/Content`, `${lock}/Viewport`)]),
+    node(`${lock}/Viewport`), node(`${lock}/Viewport/Content`, topStretch, [vlg, csf]),
+    bubble(`${lock}/Viewport/Content/OtherChatNode`, false), bubble(`${lock}/Viewport/Content/MyChatNode`, true),
+    bubble(`${lock}/Viewport/Content/OtherChatNode (1)`, false),
+    node("/Mask/IncomingCall", FULL, [], false)];
+  return d;
+};
+const widgetNode = (path, r, extra) => ({ path, name: path.split("/").pop(), active: true, layer: 5, localPosition: Z, localRotation: Q,
+                                          localScale: ONE, rect: r, components: [], ...extra });
+const chatWidget = () => ({ nodes: [
+  widgetNode("UIAdvChatWidget", FULL, { canvas: { m_Enabled: 1, m_RenderMode: 1, m_PixelPerfect: 0, m_OverrideSorting: 0,
+    m_SortingOrder: 10000, m_PlaneDistance: 1 }, canvasScaler: { m_Enabled: 1, m_UiScaleMode: 1, m_ScreenMatchMode: 1,
+    m_ReferenceResolution: { x: 1920, y: 1080 }, m_MatchWidthOrHeight: 0, m_ReferencePixelsPerUnit: 100 } }),
+  widgetNode("UIAdvChatWidget/AdvChatView", FULL, { chatView: { _showEaseDuration: 0.3, _hideEaseDuration: 0.2, _showEase: 18,
+    _hideEase: 18, _scrollDuration: 0.2, _typingDelay: 0.03, _typingTextBoxMinHeight: 63, _screenModeTransitionDuration: 0.18,
+    _screenModeTransitionEase: 9, _incomingCallPositionOffset: { x: 0, y: 0 }, _windowParentRect: "UIAdvChatWidget/AdvChatView/Target" } }),
+  widgetNode("UIAdvChatWidget/AdvChatView/Target", rect(TOP, TOP, { x: 0, y: 0 }, { x: 0, y: 0 }, TOP), { canvasGroup: null }),
+] });
+
+const makePlayer = (rows, { auto = false, doc = chatDoc(), phone = false } = {}) => {
   const loop = new PlayerLoop(30), se = [], log = [];
   let indicator = false;
   const ui = { isTyping: false, showNextIndicator: () => { indicator = true; }, hideNextIndicator: () => { indicator = false; },
                get indicator() { return indicator; } };
+  if (phone) Object.assign(ui, { language: { mode: 1 }, fonts: { chatTexts: { [W]: {} } },
+                                 doc: { chatWidget: chatWidget(), chatStatusTexts: { call_status: "Calling", lock_status: "Locked" } } });
   const texts = { 60001: "Read", 60004: "[stamp]", 11: "Group", 21: "hello there", 22: "me", 23: "typing!", 31: "Alice", s1_log: "[s1]" };
   const fieldRenderer = { foreground: { count: 0 }, addForegroundEntry() { this.foreground.count++; },
                           removeForegroundEntry() { this.foreground.count = Math.max(this.foreground.count - 1, 0); } };
@@ -201,4 +244,47 @@ test("the incoming call screen fits the phone's visible bounds into the view; na
   m.addTalk(9, "c", "", 0, [], true);
   m.applyRead(9, 1);                                                       // never lowers a count; the new entry: 2 (last applied)
   assert.deepEqual(m.entries.map((e) => e.readCount), [2, 2, 1]);
+});
+
+test("the laid-out phone: new copies under the content with the templates hidden, the timeline scrolled to its bottom", async () => {
+  const talk = (i) => ({ cmd: "ChatTalk", TargetChatID: 200, AdvTextID: "21", IsNoWait: true, i });
+  const rows = [{ ...OPEN, IsNoWait: true }, talk(1), talk(2), talk(3), talk(4)];
+  const doc = { ...chatDoc(), windows: { [W]: phoneWindowDoc() } };
+  const t = makePlayer(rows, { doc, phone: true });
+  await installStoryFeatures(t.ctx, t.p);
+  const chat = storyChat(t.ctx), v = chat.view, w = chat.window(100);
+  assert.ok(chat.phone);
+  await settle(t.loop, run(t, { ...rows[0], i: 0 }));
+  await steps(t.loop, 10);
+  assert.equal(w.root.parent, chat.phone.target);
+  assert.deepEqual([w.templates.my.activeSelf, w.templates.other.activeSelf], [false, false]);
+  const content = w.scroll.main.content;
+  for (const i of [1, 2, 3]) { await settle(t.loop, run(t, rows[i])); await steps(t.loop, 8); }
+  assert.equal(content.anchoredPosition.y, 0);                              // 30 + 3 x 200 + 2 x 5 + 30 = 670: fits the 700 view
+  await settle(t.loop, run(t, rows[4]));
+  await steps(t.loop, 8);
+  assert.equal(content.rect.h, 875);
+  assert.ok(Math.abs(content.anchoredPosition.y - 175) < 1e-3, `${content.anchoredPosition.y}`);   // scrolled to the bottom (0.2 s)
+  assert.equal(w.scroll.main.normalized, 0);
+  assert.deepEqual(content.children.map((c) => [c.name, c.activeSelf]),
+                   [["MyChatNode", false], ["OtherChatNode", false], ...[1, 2, 3, 4].map(() => ["OtherChatNode(Clone)", true])]);
+  assert.ok(v.mainNodes.every((n) => n.ui.root.parent === content));
+  disposeStoryFeatures(t.ctx);
+});
+
+test("the laid-out phone: the lock timeline pops its pre-filled nodes (last found first), then copies the first lock node", async () => {
+  const talk = (i) => ({ cmd: "ChatTalk", TargetChatID: 200, AdvTextID: "21", IsNoWait: true, i });
+  const rows = [{ ...OPEN, Parameter2: "2", IsNoWait: true }, talk(1), talk(2), talk(3)];
+  const doc = { ...chatDoc(), windows: { [W]: phoneWindowDoc() } };
+  const t = makePlayer(rows, { doc, phone: true });
+  await installStoryFeatures(t.ctx, t.p);
+  const chat = storyChat(t.ctx), v = chat.view, w = chat.window(100);
+  await settle(t.loop, run(t, { ...rows[0], i: 0 }));
+  await steps(t.loop, 10);
+  for (const i of [1, 2, 3]) { await settle(t.loop, run(t, rows[i])); await steps(t.loop, 2); }
+  assert.deepEqual(v.lockNodes.map((n) => n.ui.root.name), ["OtherChatNode (1)", "OtherChatNode", "OtherChatNode(Clone)"]);
+  assert.deepEqual(w.lockChatNodeParent.children.map((c) => [c.name, c.activeSelf]),
+                   [["MyChatNode", false], ["OtherChatNode (1)", true], ["OtherChatNode", true], ["OtherChatNode(Clone)", true]]);
+  assert.equal(v.mainNodes.length, 3);                                       // live sends go to both timelines
+  disposeStoryFeatures(t.ctx);
 });

@@ -180,8 +180,12 @@ export class UnityProgram {
     for (const s of this.samplers) {
       const t = UnityProgram.lookup(sheets, s.name, this.label);
       if (!t || !t.glTexture) throw new Error(`${this.label}: sampler ${s.name} needs a texture`);
+      // a cube sampler takes a cube map (a texture with target TEXTURE_CUBE_MAP), every other sampler a 2D texture
+      const target = s.type === gl.SAMPLER_CUBE ? gl.TEXTURE_CUBE_MAP : gl.TEXTURE_2D;
+      if ((t.target ?? gl.TEXTURE_2D) !== target)
+        throw new Error(`${this.label}: sampler ${s.name} needs a ${target === gl.TEXTURE_CUBE_MAP ? "cube map" : "2D texture"}`);
       gl.activeTexture(gl.TEXTURE0 + s.unit);
-      gl.bindTexture(gl.TEXTURE_2D, t.glTexture);
+      gl.bindTexture(target, t.glTexture);
       gl.uniform1i(s.loc, s.unit);
     }
   }

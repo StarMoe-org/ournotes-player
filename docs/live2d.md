@@ -244,7 +244,12 @@ Models without a MotionSync controller take the mouth from the voice's CRI Lips 
   the channel-0 samples output since its previous pull, on the AudioContext clock, at `sampleRate`; `latest(n)` and
   `paused` are as above. How far the value trails the output is the analysis's own timing.
 - `setLipsAnalyzer(null)` detaches it (the voice ended or was stopped). An object without `getOpenInfo` is reported in
-  `lipSyncMissing` and the lip sync stays reset. This repository does not include a CRI Lips analysis.
+  `lipSyncMissing` and the lip sync stays reset.
+- `CriLipsAnalyzer` (`src/live2d/crilips/`, [crilips.md](crilips.md)) is this object: the game's analysis reimplemented
+  on a voice's PCM source, from the CRI Lips data a story ships. The story player creates one per voice on the paths
+  where the game uses the analysis: the voice of a speaker without a MotionSync controller, and the speakers that
+  follow another speaker's voice (on those rows a model with a MotionSync controller takes its mouth from the analysis
+  too, as in the game). Without the data the story passes the voice's PCM source, which has no `getOpenInfo`.
 
 ## Not included
 

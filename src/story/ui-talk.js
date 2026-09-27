@@ -89,15 +89,22 @@ export class StoryTalkWindow {
     this._typing = null;
   }
 
-  // UIAdvTalkWindow.Init (TalkArea off; the background rect for the safe area: no inset here; ApplyTalkTextStyle) and
-  // UITypingTalkWindow.Refresh: TalkArea off, ResetSpeaker, HideTalkNextIndicator, OnRefresh: HideTalk(0),
-  // HideAutoIcon, kill both tweens; the fast icon hidden
+  // UIAdvTalkWindow.Init, run once on the loaded window before it is ever attached (it does not run the base Init):
+  // TalkArea off; the background's rect and height captured and OnResolutionChanged run once (no safe-area inset
+  // here: the prefab rect stays); ApplyTalkTextStyle. The other parts keep their prefab state until commands set them.
+  init() {
+    this.ui.setActive(this.p.talkArea, false);
+    this._isShowing = false; this._isAutoMode = false; this._isActiveIndicator = false; this._autoIconActive = false;
+    this._applyTalkTextStyle();
+  }
+
+  // UITypingTalkWindow.Refresh (AdvTalkView.Refresh, from UIAdvWidget.Refresh with the window attached): TalkArea off,
+  // ResetSpeaker, HideTalkNextIndicator, OnRefresh: HideTalk(0), HideAutoIcon, kill both tweens; the fast icon hidden
   refresh() {
     const p = this.p, ui = this.ui;
     ui.setActive(p.talkArea, false);
     this._isShowing = false; this._isAutoMode = false; this._isActiveIndicator = false; this._autoIconActive = false;
     this._typing = null;
-    this._applyTalkTextStyle();                     // Init
     p.talkText.storyText.setText("");               // ResetSpeaker: TalkText.SetText(""), SetSpeakerName("")
     this.setSpeakerName("");
     this.hideTalkNextIndicator();

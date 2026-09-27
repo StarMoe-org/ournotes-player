@@ -255,24 +255,6 @@ test("frame comment text helpers: user id budget and the body break", () => {
   assert.equal(slanderText.body("ab\r\ncd"), "ab\ncd");
 });
 
-test("Frame: a UIParticle node plays headless but refuses to be drawn while visible", async () => {
-  const sparkle = (name) => ({ key: `Adv/Frame/${name}`, nodes: [
-    ...fill(name).nodes,
-    node(`${name}/Fx`, [{ type: "CanvasRenderer" }, { type: "MonoBehaviour", class: "UIParticle", m_Enabled: 1 },
-                        { type: "ParticleSystem" }, { type: "ParticleSystemRenderer" }]),
-  ] });
-  const t = makePlayer([{ cmd: "Frame", TargetAssetName: "s" }], { s: sparkle("s") });
-  await installStoryFeatures(t.ctx, t.p);
-  const v = frameView(t.ctx), s = v.loaded("s"), canvas = v.screen.canvas.frame;
-  v.screen.layoutAll(2340, 1080);
-  assert.deepEqual(canvas.drawItems(), []);                               // not shown: nothing drawn, no refusal
-  await settle(t.loop, run(t, { TargetAssetName: "s" }));
-  assert.equal(s.isShowing, true);
-  v.screen.layoutAll(2340, 1080);
-  assert.throws(() => canvas.drawItems(), /s\/Fx: UIParticle \/ ParticleSystem \/ ParticleSystemRenderer not drawn/);
-  disposeStoryFeatures(t.ctx);
-});
-
 test("Frame: a RectTransform under a plain Transform is laid out against a zero-size rect at the Transform's origin", async () => {
   const name = "t";
   const plain = { path: `${name}/Holder`, name: "Holder", active: true, layer: 5, tag: 0, localPosition: { x: 100, y: 50, z: 0 },

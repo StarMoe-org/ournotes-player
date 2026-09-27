@@ -8,6 +8,7 @@ import { UIDraw, UIMesh, uiColor32 } from "../../engine/ugui.js";
 import { CanvasGL, CanvasNode, ScreenCanvas } from "./canvas.js";
 import { DOTargets } from "./dotween.js";
 import { featureSlot, featureState } from "./state.js";
+import { CanvasParticles } from "./uiparticle.js";
 
 // The camera canvases of UIAdvWidget below the front canvas, in their paint order (Canvas.sortingOrder): VideoCanvas
 // 301, StillCanvas / VideoAndStillRenderScreenCanvas 302, FrameCanvas 303 (the front canvas is 304). AdvCanvasLayer is
@@ -127,8 +128,8 @@ export class StoryScreen {
       if (k !== "frame") {
         if (st.camera !== this.camera.path) throw new StoryCommandError(`${c.name}: camera ${st.camera} is not the video and still camera`);
         c.perspective = { fov: this.camera.camera["field of view"] };
-        c.planeDistance = st.planeDistance;
       }
+      c.planeDistance = st.planeDistance;
       return [k, c];
     });
     this.canvas = Object.fromEntries(this.canvases);
@@ -145,7 +146,8 @@ export class StoryScreen {
     this.dotween = new DOTargets();       // DOKill targets of the canvas tweens
     this.animators = [];                  // CanvasAnimator, updated in the animation phase
     this.updaters = [];                   // MonoBehaviour Updates (update phase): fn(dt)
-    this.itemSources = [];                // (canvas, node, alpha) -> extra draw items (particles)
+    this.itemSources = [];                // (node, alpha) -> extra draw items (particles)
+    this.frameParticles = null;           // the frame canvas' UIParticles (CanvasParticles), with the first prefab that has any
     this.gl = null;
     this.target = null;                   // the camera's render texture
     this.cameraColor = null;              // the camera's HDR colour target
@@ -211,6 +213,17 @@ export class StoryScreen {
     return { view: mat4.identity(), proj: mat4.perspective(c["field of view"], width / height, near, far), near, far };
   }
 
+  // The UIParticles of a camera canvas (uiparticle.js): the frame canvas, rendered by the UI camera (the story UI data's
+  // uiCamera, read at the first draw)
+  canvasParticles(kind) {
+    if (kind !== "frame") throw new StoryCommandError(`${this.canvas[kind].name}: canvas particles not implemented`);
+    if (!this.frameParticles) {
+      const cp = this.frameParticles = new CanvasParticles(this.ctx, this.canvas.frame, () => this.ui);
+      this.itemSources.push((n, a) => cp.itemsOf(n, a));
+    }
+    return this.frameParticles;
+  }
+
   // draw items of other graphics on a node (particles), in hierarchy order after the node's own graphic
   _extra(n, alpha) {
     const out = [];
@@ -255,6 +268,7 @@ export class StoryScreen {
       this.gl.draw(this.screenCanvas, [this._screenItem()], width, height);
     }
     const frame = this.canvas.frame;
+    if (this.frameParticles) this.frameParticles.refresh(this.ctx.loop);
     this.gl.draw(frame, frame.drawItems((n, a) => this._extra(n, a)), width, height);
   }
 

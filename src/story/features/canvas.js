@@ -134,12 +134,14 @@ export const aspectFitter = (f) => (n, pr) => {
 // ------------------------------------------------------------------------------------------------ Image Tiled
 // Image.GenerateTiledSprite (uGUI): a sprite without border whose texture repeats and is not packed tiles through the
 // uv scale of one quad; otherwise quads per tile (fill centre), clipped at the far edges. Borders of tiled sprites are
-// outside the subset.
+// outside the subset. The tile is the sprite's full rect size and its uvs DataUtility.GetInnerUV.
+// ENGINE: GetInnerUV is the texture rect less the border in texture uvs; for a trimmed sprite that is the packed
+// (trimmed) area, stretched over the full tile (the trim offset is not corrected, unlike Simple images).
 export const tiledImage = (node, img, sprite, canvasRefPPU) => {
   const c = uiColor32(img.m_Color), r = node.rect;
   const ppu = sprite ? F(F(sprite.pixelsPerUnit / canvasRefPPU) * img.m_PixelsPerUnitMultiplier) : 1;
   if (sprite && sprite.hasBorder) throw new UIError(`${node.path}: tiled sprite with a border not implemented`);
-  const inner = sprite ? (sprite.inner || (() => { throw new UIError(`${node.path}: tiled trimmed sprite`); })()) : [0, 0, 0, 0];
+  const inner = sprite ? sprite.inner || sprite.outer : [0, 0, 0, 0];      // no border: the inner uvs are the outer ones
   const size = sprite ? { x: sprite.rect.width, y: sprite.rect.height } : { x: 100, y: 100 };
   let tw = F(size.x / ppu), th = F(size.y / ppu);
   const xMin = 0, xMax = r.w, yMin = 0, yMax = r.h;
@@ -294,7 +296,8 @@ export class TransformNode {
 }
 
 // Coffee.UIParticle (a MaskableGraphic that bakes its ParticleSystems into canvas meshes) and the particle systems it
-// draws: not drawn by this player, so a node with one of them raises when it would be drawn
+// draws: a node with one of them raises when it would be drawn unless the prefab's particles are handled
+// (uiparticle.js marks their nodes particleHandled and draws them through the screen's item sources)
 const PARTICLE_COMPONENTS = ["UIParticle", "ParticleSystem", "ParticleSystemRenderer"];
 
 export class CanvasPrefab {
@@ -437,7 +440,8 @@ export class ScreenCanvas {
   }
 
   // paint order and inherited alpha: UIDraw.list. itemsOf(n, alpha) adds the items of other graphics (particles, video):
-  // {node, material (record or null: the default UI material), texture (path) | glTex () => GLTex, verts, idx}.
+  // {node, material (record or null: the default UI material), texture (path) | glTex () => GLTex, verts, idx,
+  // canvasSpace (the vertices are final canvas positions, also on a node off the canvas plane)}.
   // A node off the canvas plane (rotated about x / y, or moved along z) has its mesh placed by its 3D matrix: under a
   // perspective camera (the canvas `perspective` = {fov}: Screen Space - Camera, the canvas plane filling the view at
   // its plane distance) the vertices keep their z and CanvasGL projects them (viewProjection); under an orthographic
@@ -459,11 +463,11 @@ export class ScreenCanvas {
                    verts, idx: Uint32Array.from(mesh.idx), ...(img.glTex ? { glTex: img.glTex } : {}) });
       }
       if (n.tmp && n.tmp.enabled && n.tmp.text && alpha > 0) throw new UIError(`${n.path}: canvas text not implemented`);
-      if (n.particleComponents && alpha > 0)
+      if (n.particleComponents && !n.particleHandled && alpha > 0)
         throw new StoryCommandError(`${n.path}: ${n.particleComponents.join(" / ")} not drawn by this player`);
       if (itemsOf) {
         const extra = itemsOf(n, alpha);
-        if (extra.length && offPlane) throw new UIError(`${n.path}: a video or particle graphic off the canvas plane`);
+        if (offPlane && extra.some((it) => !it.canvasSpace)) throw new UIError(`${n.path}: a video graphic off the canvas plane`);
         out.push(...extra);
       }
       return out;

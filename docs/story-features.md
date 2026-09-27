@@ -42,23 +42,35 @@ projection, volume mask or volume update mode), the episode is refused with the 
   shake, a DOTween move along z, a rotation about x or y) is drawn through the camera's perspective projection. Video
   black bars come from the video view's stencil mask and curtain. In a browser the videos play through an HTML video
   element kept on the player's video clock; a headless session keeps the clock only.
-- **Frames** on the frame canvas with their images and Animators, plain Transforms included.
+- **Frames** on the frame canvas with their images and Animators, plain Transforms included, and their canvas
+  particles: Coffee.UIParticle simulates the frame's particle systems and bakes them with the UI camera (the story UI
+  data's `uiCamera`) into canvas meshes, drawn in hierarchy order with the frame's other graphics. A session without
+  a GL context does not update them, as nothing is drawn.
 - **Stills** with their images, canvas groups and DOTween Pro animations, rotations in three dimensions included.
 - **Particle effects** of Effect rows and stages (their particle systems, sprites and meshes), in the canvas or camera
   layer of their prefab.
 - **Post effects, stage environments, rim light, brightness, depth of field** through the story renderer.
 - **Flashes** through the story UI.
+- **The chat phone.** UIAdvChatWidget's ChatCanvas (Screen Space - Camera on the ADV camera, CanvasScaler Scale With
+  Screen Size / Expand) with the episode's chat windows attached under AdvChatView's Target, laid out and drawn as uGUI:
+  RectTransforms, the layout groups, content size fitters and layout elements of the window, its Images (Simple and
+  Sliced sprites, trimmed ones included), TextMeshPro texts with the chat windows' text bindings of the story UI
+  (serialized texts until a row sets them), CanvasGroups, the read label's CanvasRenderer alpha, stencil Masks, Soft
+  Mask for uGUI (a SoftMask over its Image's sprite, Simple or Sliced) and the ScrollRect positions of the main and
+  lock-screen timelines. The view does to the window's objects what AdvChatView does: the screen modes and slides, the
+  bubbles (new copies of the window's node templates; the lock-screen timeline pops its pre-filled nodes before it
+  copies the first one), the sender identity and read labels, the typing box and its height, the typing padding of the
+  timeline and the scroll to the bottom. The canvas is a layer 11 renderer of the field (sorting order 10000, at the
+  canvas' plane distance): in the camera's list, or after the offscreen composite while the foreground entry is active.
+  A drawing session needs the story UI's chat data (`ui/ui.json` `chatWidget` and `chatTexts`, `ui/fonts.json`
+  `chatTexts`) and refuses a chat episode without it; a headless session with that data lays the phone out as well,
+  without it it keeps the same state without the layout (the scroll tweens run on a 0 position).
 
 ## What is not drawn
 
-- **The chat phone.** Its commands run completely: the phone's visibility, slides and screen modes, the bubbles and
-  the lock-screen timeline, read labels, the conversation memory and its restore, the typing box, the waits and
-  sounds. Its bubbles are uGUI layout groups around TextMeshPro text, which this player does not lay out, so a session
-  with a GL context refuses chat episodes (`the chat window (UIAdvChatWidget) is not drawn by this player`). A
-  headless session plays them.
 - **Canvas text** in frames and stills: such a node raises when it is drawn.
-- **Canvas particles** in frames and stills (Coffee.UIParticle and the particle systems it bakes into the canvas):
-  such a node raises when it is drawn while visible. A headless session plays these frames.
+- **Canvas particles in stills**: such a node raises when it is drawn while visible. A headless session plays these
+  stills.
 - **The video seek freeze.** The game re-prepares a video with audio at a new playback speed and covers the gap with a
   copy of the video texture; here the video changes speed without the re-prepare.
 

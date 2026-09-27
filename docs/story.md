@@ -25,7 +25,9 @@ a story is created:
 Both are Live2D Inc.'s software under its own licenses; using them is between the page and Live2D. ournotes-player's
 license does not cover them, and nothing in this repository, its npm package or its bundles includes them. Without
 Cubism Core a story does not load (`Live2D Cubism Core is not loaded: …`). Without the MotionSync Core the story plays,
-and the characters' mouths do not follow the voices; the player does not replace the analysis with anything else.
+and the mouths of models with a MotionSync controller do not follow the voices; the player does not replace that
+analysis with anything else. The models without one, and the speakers that follow another speaker's voice, take their
+mouth from the CRI Lips analysis in the story's own data ([crilips.md](crilips.md)), which needs neither file.
 
 ## Entry points
 
@@ -150,9 +152,10 @@ and the episode goes on normally. The state reached is the game's state after a 
 The player refuses an episode it cannot play as the game does, naming what is missing: a command without a handler
 (the command registry below; checked from the manifest before the story's files download), a stage feature it does
 not draw (stage shadow textures), a talk window the story UI does not provide, a text the story UI cannot lay out, and
-in a session that draws, the chat window (checked before the characters load). Such an episode is never played
-halfway. The one exception is a graphic found only while drawing: a frame or still canvas that shows a UIParticle
-effect stops the session at that frame with an error that names the node and the component.
+in a session that draws, a chat episode without the story UI's chat data (`ui/ui.json` `chatWidget` and `chatTexts`,
+`ui/fonts.json` `chatTexts`). Such an episode is never played
+halfway. The one exception is a graphic found only while drawing: a still canvas that shows a UIParticle effect
+stops the session at that frame with an error that names the node and the component.
 
 ## Extending: the command registry
 
@@ -185,7 +188,9 @@ SoundVolume, Expression, Costume, EyeBlink, Pause, Resume, plus those the featur
 The stage (background sprite and plane, lights, focus points, volume profiles, particle effect groups), the character
 field, the camera, the field renderer's offscreen composite (per-slot alpha, brightness, blur, the Stage capture
 crossfade; the renderers of other objects routed by their layer as the game's render pass does), the background blur,
-the URP post chain (LUT, bloom, uber with film grain), the curved lens and FXAA.
+the URP post chain (LUT, bloom, uber with film grain), the curved lens and FXAA. The talk windows the TalkWindow rows
+switch between: the default window and the centered one (`UICenterTalkWindow`) with the dimmed backdrop and the UI blur
+of the screen behind its text.
 Overlay episodes (`playbackMode` 1: the home spot talks and the live result talks) play through the game's simple
 story player in their host screen ([story-simple.md](story-simple.md)).
 
@@ -197,17 +202,10 @@ story player in their host screen ([story-simple.md](story-simple.md)).
 - The per-frame loading of the game (windowed preload): every file is loaded before the story starts.
 - The UI camera's own renderers: an effect placed on the UI or front canvas layers (layers 5 and 13) is not drawn,
   and a frame that would draw one fails.
-- The centered talk window (`UICenterTalkWindow`): an episode that switches to it is refused.
-- The chat window (`UIAdvChatWidget`, the phone): it is not drawn, and a session that draws refuses an episode with chat
-  rows. A headless session runs them: their timing and their talk log entries.
-- UIParticle effects on the frame and still canvases (speed lines, rain, sparkles and the like): not drawn; see
-  the exception above.
-- The CRI Lips mouth analysis: while a voice plays, a model without a MotionSync controller keeps its mouth closed.
-  Its `lipSyncMissing` is then `"CRI Lips analysis"` ([live2d.md](live2d.md)).
+- UIParticle effects on the still canvases: not drawn; see the exception above (the frame canvases draw them, and
+  no still of the current stories has one).
 - The re-speed of a video after a seek (`VideoPlayingOrSeekRespeeding`): a speed change reaches the playing video at
   once.
-- Home spot rooms with Universal Render Pipeline/Lit materials: a session that draws refuses them
-  ([story-simple.md](story-simple.md)).
 - Stage shadow textures: refused (see above).
 
 ### Engine behaviour

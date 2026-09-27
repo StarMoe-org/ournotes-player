@@ -50,7 +50,7 @@ export const installStoryFeatures = async (ctx, core, opts = {}) => {
   loadFrames(ctx);
   loadStills(ctx);
   loadVideos(ctx);
-  loadChat(ctx);
+  await loadChat(ctx);
   loadEffects(ctx);
   if (s.screen) await s.screen.load();
   await loadEffectMaterials(ctx);

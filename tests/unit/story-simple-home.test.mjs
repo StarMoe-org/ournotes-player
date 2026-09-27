@@ -1,6 +1,7 @@
 // Home host of the simple ADV player (src/story/simple/home): the room glb read back into Unity space, the spot
 // camera's default pose / focus / return on a PlayerLoop, the UI blur ramp and Dual Kawase settings, the room's
-// visibility and URP draw order, and a headless host (gl = null). Synthetic inputs only.
+// visibility and URP draw order, URP's lighting state for the Lit materials, a headless host (gl = null) and a drawn
+// one on the headless context. Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AssetStore } from "../../src/data/assets.js";
@@ -9,7 +10,9 @@ import { EASE, easeF } from "../../src/engine/tween.js";
 import { blurLevels, blurPass, blurSettings, UIBlur } from "../../src/story/simple/home/blur.js";
 import { forwardOf, lookRotation, rotateVector, slerp, SpotCamera, spotFieldOfView } from "../../src/story/simple/home/camera.js";
 import { parseGlb, roomMeshes } from "../../src/story/simple/home/glb.js";
-import { backgroundMatrix, inverseTRS, LIT_ROOM_SHADERS, NO_TAP_TARGET, roomMatrix, SimpleHomeHost, SPINE_MISSING, VOLUME_MISSING } from "../../src/story/simple/home/host.js";
+import { backgroundMatrix, inverseTRS, NO_TAP_TARGET, roomInverse, roomMatrix, SimpleHomeHost, SPINE_MISSING, spotLighting,
+         VOLUME_MISSING } from "../../src/story/simple/home/host.js";
+import { headlessGL } from "../../scripts/lib/headless.mjs";
 import { mat4 } from "../../src/engine/math.js";
 import { majorMinor, skeletonDataVersion, spineRuntime, spineRuntimeVersion } from "../../src/story/simple/home/spine.js";
 import { parseQueueTag, ShaderInfo, sortDrawItems, SpotRoom } from "../../src/story/simple/home/room.js";
@@ -42,7 +45,9 @@ const buildGlb =(meshes, materials) => {
   };
   const jsonMeshes = meshes.map((m) => {
     const pos = acc(new Float32Array(m.positions), "VEC3", 5126, 3, true), uv = acc(new Float32Array(m.uvs), "VEC2", 5126, 2);
-    return { name: m.name, primitives: m.prims.map((p) => ({ attributes: { POSITION: pos, TEXCOORD_0: uv },
+    const attributes = { POSITION: pos, TEXCOORD_0: uv };
+    if (m.normals) attributes.NORMAL = acc(new Float32Array(m.normals), "VEC3", 5126, 3);
+    return { name: m.name, primitives: m.prims.map((p) => ({ attributes,
       indices: acc(new Uint32Array(p.indices), "SCALAR", 5125, 1), mode: 4, material: p.material })) };
   });
   while (len % 4) { parts.push(new Uint8Array(1)); len++; }
@@ -131,6 +136,11 @@ test("glb: the room file's glTF space goes back to Unity space (z, winding, uv v
   assert.deepEqual(a.bounds.min, { x: 0, y: 0, z: 4 }); assert.deepEqual(a.bounds.max, { x: 1, y: 1, z: 4 });
   assert.deepEqual(a.bounds.center, { x: 0.5, y: 0.5, z: 4 });
   assert.equal(b.primitives[0].material, 1);
+  assert.equal(p.normals, null);                                                        // no NORMAL in the file
+  const [n] = roomMeshes(parseGlb(buildGlb([card("n", -4, 0, { normals: [0, 0, 1, 0, 0, 1, 0.6, 0, 0.8, 0, 1, 0] })], [{ name: "m0" }])));
+  assert.deepEqual(Array.from(n.primitives[0].normals), [0, 0, -1, 0, 0, -1, F(0.6), 0, F(-0.8), 0, 1, -0]);  // z negated
+  const short = parseGlb(buildGlb([card("n", -4, 0, { normals: [0, 0, 1] })], [{ name: "m0" }]));
+  assert.throws(() => roomMeshes(short), /NORMAL count differs from POSITION/);
 });
 
 test("glb: malformed files are refused", () => {
@@ -346,14 +356,221 @@ test("host: headless create, 'Spine runtime missing' without a runtime or with o
   assert.throws(() => new SimpleHomeHost(null, store, loop, { kind: "afterlive" }, { camera: CAM }), /not a home host/);
 });
 
-test("host: a drawn session refuses a room material that needs URP lighting, before any GL call", async () => {
-  const lit = { ...MATERIALS[1], shader: "Universal Render Pipeline/Lit" };
-  assert.ok(LIT_ROOM_SHADERS.has(lit.shader));
-  const { store, host } = makeStore({ home: { roomMaterials: [MATERIALS[0], lit] } });
+// ----------------------------------------------------------------------------------------------- URP lighting
+const WHITE = { r: 1, g: 1, b: 1, a: 1 };
+const RENDER_SETTINGS = { m_Fog: 0, m_AmbientMode: 3, m_AmbientSkyColor: WHITE, m_AmbientIntensity: 1, m_DefaultReflectionMode: 0,
+                          m_SkyboxMaterial: null, m_CustomReflection: null, m_Sun: null, lightmaps: 0 };
+const pipeline = (extra = {}) => ({ m_ShEvalMode: 0, m_MainLightRenderingMode: 1, m_MainLightShadowsSupported: 0,
+                                    m_AdditionalLightsRenderingMode: 0, m_AdditionalLightShadowsSupported: 0,
+                                    m_ReflectionProbeBlending: 0, m_ReflectionProbeBoxProjection: 0, m_SupportsLightLayers: 0,
+                                    m_RendererDataList: ["Runtime", "Editor"], m_DefaultRendererIndex: 1, ...extra });
+const GRAPHICS = {
+  defaultPipeline: "Best",
+  qualityLevels: [{ name: "Middle", customRenderPipeline: "Middle" }, { name: "Best", customRenderPipeline: "Best" }],
+  pipelines: { Best: pipeline({ m_AdditionalLightsRenderingMode: 2 }), Middle: pipeline() },
+  renderers: { Runtime: { m_RenderingMode: 0, m_RendererFeatures: [{ class: "Fwk.UI.Rendering.UIRendererFeature", m_Active: 1 }] },
+               Editor: { m_RenderingMode: 0, m_RendererFeatures: [] } },
+};
+const lighting = (over = {}) => spotLighting({ graphics: GRAPHICS, quality: 1, rendererIndex: 0, renderSettings: RENDER_SETTINGS,
+                                               lights: [], what: "home spot 1", ...over });
+
+test("spotLighting: keywords of the quality level's pipeline asset, no light, URP's default light constants", () => {
+  const best = lighting();
+  assert.equal(best.pipeline, "Best"); assert.equal(best.renderer, "Runtime");
+  // Auto SH evaluation is per vertex on GLES3; the additional lights keyword stays on without an additional light
+  assert.deepEqual(best.keywords, ["EVALUATE_SH_VERTEX", "_ADDITIONAL_LIGHTS_VERTEX"]);
+  assert.deepEqual(lighting({ quality: 0 }).keywords, ["EVALUATE_SH_VERTEX"]);
+  assert.equal(lighting({ rendererIndex: -1 }).renderer, "Editor");
+  const g = (p) => ({ ...GRAPHICS, pipelines: { ...GRAPHICS.pipelines, Best: pipeline(p) } });
+  assert.deepEqual(lighting({ graphics: g({ m_ShEvalMode: 3, m_AdditionalLightsRenderingMode: 1 }) }).keywords, ["_ADDITIONAL_LIGHTS"]);
+  assert.deepEqual(lighting({ graphics: g({ m_ShEvalMode: 2, m_ReflectionProbeBlending: 1 }) }).keywords,
+                   ["EVALUATE_SH_MIXED", "_REFLECTION_PROBE_BLENDING"]);
+  assert.deepEqual(lighting({ graphics: { ...GRAPHICS, qualityLevels: [{ customRenderPipeline: null }] }, quality: 0 }).pipeline, "Best");
+  assert.deepEqual(best.globals._MainLightPosition, [0, 0, 1, 0]);
+  assert.deepEqual(best.globals._MainLightColor, [0, 0, 0, 1]);
+  assert.deepEqual(best.globals._AdditionalLightsCount, [0, 0, 0, 0]);
+  assert.deepEqual(best.perObject.unity_SHAr, [0, 0, 0, 1]);                 // a white Flat ambient: SH(N) = 1
+  assert.deepEqual(best.perObject.unity_SHC, [0, 0, 0, 0]);
+  assert.deepEqual(best.perObject.unity_LightData, [0, 0, 1, 0]);
+  // inactive or disabled lights light nothing
+  const off = [{ path: "a", type: "Light", active: false, m_Enabled: 1 }, { path: "b", type: "Light", active: true, m_Enabled: 0 }];
+  assert.deepEqual(lighting({ lights: off }).keywords, best.keywords);
+});
+
+test("spotLighting: what it does not reproduce is refused", () => {
+  const rs = (x) => ({ renderSettings: { ...RENDER_SETTINGS, ...x } });
+  const g = (p) => ({ graphics: { ...GRAPHICS, pipelines: { ...GRAPHICS.pipelines, Best: pipeline(p) } } });
+  const r = (x) => ({ graphics: { ...GRAPHICS, renderers: { ...GRAPHICS.renderers, Runtime: { m_RenderingMode: 0, m_RendererFeatures: [], ...x } } } });
+  for (const [over, re] of [
+    [{ graphics: null }, /needs the scene's render settings/],
+    [{ quality: 4 }, /quality level 4/],
+    [{ lights: [{ path: "room/lamp", type: "Light", active: true, m_Enabled: 1 }] }, /Light room\/lamp is not reproduced/],
+    [{ lights: [{ path: "probe", type: "ReflectionProbe", active: true, m_Enabled: 1 }] }, /ReflectionProbe probe/],
+    [{ renderSettings: null }, /RenderSettings/],
+    [rs({ m_Fog: 1 }), /fog/],
+    [rs({ m_Sun: { name: null } }), /sun/],
+    [rs({ lightmaps: 2 }), /lightmaps/],
+    [rs({ m_AmbientMode: 0 }), /ambient mode 0/],
+    [rs({ m_AmbientSkyColor: { r: 0.5, g: 0.5, b: 0.5, a: 1 } }), /white Flat ambient/],
+    [rs({ m_SkyboxMaterial: { name: "sky" } }), /default reflection/],
+    [rs({ m_DefaultReflectionMode: 1 }), /default reflection/],
+    [g({ m_MainLightShadowsSupported: 1 }), /main light shadows/],
+    [g({ m_AdditionalLightShadowsSupported: 1, m_AdditionalLightsRenderingMode: 1 }), /additional light shadows/],
+    [g({ m_SupportsLightLayers: 1 }), /light layers/],
+    [r({ m_RenderingMode: 2 }), /rendering mode 2/],
+    [r({ m_RendererFeatures: [{ class: "UnityEngine.Rendering.Universal.ScreenSpaceAmbientOcclusion", m_Active: 1 }] }), /ScreenSpaceAmbientOcclusion/],
+  ]) assert.throws(() => lighting(over), re, JSON.stringify(over));
+  // an inactive feature sets nothing
+  lighting(r({ m_RendererFeatures: [{ class: "UnityEngine.Rendering.Universal.ScreenSpaceAmbientOcclusion", m_Active: 0 }] }));
+});
+
+test("roomInverse: the inverse of roomMatrix", () => {
+  const settings = { ...SETTINGS, backgroundPosition: { x: 1, y: -2, z: 3 }, backgroundRotation: { x: 10, y: 180, z: -5 },
+                     backgroundScale: { x: 2, y: 1, z: 0.5 } };
+  const objRoot = { position: { x: 0.5, y: 0, z: -1 }, rotation: { x: 0, y: 0.7071068, z: 0, w: 0.7071068 }, scale: { x: 1, y: 2, z: 1 } };
+  const roomRoot = { localPosition: { x: 0, y: 1, z: 0 }, localRotation: { x: 0, y: 1, z: 0, w: 0 }, localScale: { x: 1, y: 1, z: 2 } };
+  for (const [o, rr] of [[null, null], [objRoot, null], [objRoot, roomRoot]]) {
+    const I = mat4.mul(roomMatrix(backgroundMatrix(settings, o), rr), roomInverse(settings, o, rr));
+    I.forEach((v, i) => assert.ok(near(v, i % 5 === 0 ? 1 : 0, 1e-5), `${i}: ${v}`));
+  }
+});
+
+// a pass render state as the parsed shader files hold it (opaque, no blend, ZTest LEqual, back faces culled)
+const v = (val) => ({ val });
+const PASS_STATE = { rtBlend0: { srcBlend: v(1), destBlend: v(0), srcBlendAlpha: v(1), destBlendAlpha: v(0), blendOp: v(0),
+                                 blendOpAlpha: v(0), colMask: v(15) },
+                     zTest: v(4), zWrite: v(1), culling: v(2), offsetFactor: v(0), offsetUnits: v(0), stencilRef: v(0),
+                     stencilReadMask: v(255), stencilWriteMask: v(255), rtSeparateBlend: false, alphaToMask: v(0),
+                     stencilOpFront: { comp: v(8), pass: v(0), fail: v(0), zFail: v(0) },
+                     stencilOpBack: { comp: v(8), pass: v(0), fail: v(0), zFail: v(0) } };
+const drawnShader = (queue, lightMode, passes = 1) => ({
+  name: "x", properties: [], keywords: [],
+  subShaders: [{ tags: { tags: queue ? [["QUEUE", queue], ["RenderPipeline", "UniversalPipeline"]] : [] },
+                 passes: Array.from({ length: passes }, () => ({ name: "", tags: { tags: [] },
+                   state: { ...PASS_STATE, m_Tags: { tags: lightMode ? [["LIGHTMODE", lightMode]] : [] } } })) }],
+});
+const LIT = "Universal Render Pipeline/Lit";
+const DRAWN_SHADERS = {
+  "Unlit/Transparent Cutout": [drawnShader("AlphaTest"), [[0, []]]],
+  "Hidden/UI/DualKawaseBlur": [drawnShader(null, null, 3), [[0, []], [1, []], [2, []]]],
+  [LIT]: [{ ...drawnShader("Geometry", "UniversalForward"),               // _BaseMap unset: the shader's default white
+            properties: [{ m_Name: "_BaseMap", m_Type: 4, m_DefTexture: { m_DefaultName: "white" } }] },
+          [[0, ["EVALUATE_SH_VERTEX"]], [0, ["EVALUATE_SH_VERTEX", "_ADDITIONAL_LIGHTS_VERTEX"]],
+           [0, ["EVALUATE_SH_VERTEX", "_ADDITIONAL_LIGHTS", "_MAIN_LIGHT_SHADOWS"]]]],
+};
+// the Lit forward pass's inputs (URP 14 Lit, pass ForwardLit, EVALUATE_SH_VERTEX): what the headless context reports
+const LIT_INPUTS = {
+  attribs: ["in_POSITION0", "in_NORMAL0", "in_TEXCOORD0"],
+  uniforms: ["hlslcc_mtx4x4unity_MatrixVP", "_GlobalMipBias", "_MainLightPosition", "_MainLightColor", "_WorldSpaceCameraPos",
+             "unity_OrthoParams", "hlslcc_mtx4x4unity_MatrixV"],
+  blocks: { UnityPerDraw: ["hlslcc_mtx4x4unity_ObjectToWorld", "hlslcc_mtx4x4unity_WorldToObject", "unity_LightData",
+                           "unity_SpecCube0_HDR", "unity_SHAr", "unity_SHAg", "unity_SHAb", "unity_SHBr", "unity_SHBg", "unity_SHBb", "unity_SHC"],
+            UnityPerMaterial: ["_BaseMap_ST", "_BaseColor", "_Smoothness", "_Metallic", "_Surface"] },
+  samplers: [["unity_SpecCube0", "SAMPLER_CUBE"], ["_BaseMap", "SAMPLER_2D"]],
+};
+const glsl = (tag) => `#ifdef VERTEX\n#version 300 es\n// ${tag}\n#endif\n#ifdef FRAGMENT\n#version 300 es\n#endif\n`;
+
+// the headless context, reporting LIT_INPUTS for the programs linked from a source tagged LIT (as a browser reports a
+// program's active inputs); records the uniform values set and the textures bound per target
+const litGL = () => {
+  const calls = [];
+  const gl = headlessGL({ width: 64, height: 32, onCall: (n, a) => calls.push([n, a]) });
+  const src = new Map(), shadersOf = new Map(), lit = new Set();
+  const plain = LIT_INPUTS.uniforms.map((n) => ({ name: n.startsWith("hlslcc_mtx4x4") ? `${n}[0]` : n,
+                                                  type: n.startsWith("hlslcc_mtx4x4") ? gl.FLOAT_VEC4 : gl.FLOAT_VEC4,
+                                                  size: n.startsWith("hlslcc_mtx4x4") ? 4 : 1 }));
+  const blockNames = Object.keys(LIT_INPUTS.blocks);
+  const members = blockNames.flatMap((b) => LIT_INPUTS.blocks[b].map((n) => ({ block: b, name: n.startsWith("hlslcc") ? `${n}[0]` : n,
+                                                                             type: gl.FLOAT_VEC4, size: n.startsWith("hlslcc") ? 4 : 1 })));
+  const samplers = LIT_INPUTS.samplers.map(([name, t]) => ({ name, type: gl[t], size: 1 }));
+  const all = [...members, ...plain, ...samplers];
+  const base = { shaderSource: gl.shaderSource, attachShader: gl.attachShader, linkProgram: gl.linkProgram };
+  Object.assign(gl, {
+    shaderSource: (sh, t) => { src.set(sh, t); base.shaderSource(sh, t); },
+    attachShader: (p, sh) => { if (!shadersOf.has(p)) shadersOf.set(p, []); shadersOf.get(p).push(sh); base.attachShader(p, sh); },
+    linkProgram: (p) => { if ((shadersOf.get(p) || []).some((sh) => /\/\/ LIT/.test(src.get(sh)))) lit.add(p); base.linkProgram(p); },
+    getProgramParameter: (p, n) => (n === gl.LINK_STATUS ? true : !lit.has(p) ? 0 : n === gl.ACTIVE_ATTRIBUTES ? LIT_INPUTS.attribs.length
+                                    : n === gl.ACTIVE_UNIFORMS ? all.length : n === gl.ACTIVE_UNIFORM_BLOCKS ? blockNames.length : 0),
+    getActiveAttrib: (p, i) => ({ name: LIT_INPUTS.attribs[i], type: gl.FLOAT_VEC4, size: 1 }),
+    getAttribLocation: (p, name) => (lit.has(p) ? LIT_INPUTS.attribs.indexOf(name) : -1),
+    getActiveUniformBlockName: (p, b) => blockNames[b],
+    getActiveUniformBlockParameter: (p, b, n) => (n === gl.UNIFORM_BLOCK_DATA_SIZE ? 4096
+      : all.map((u, i) => [u, i]).filter(([u]) => u.block === blockNames[b]).map(([, i]) => i)),
+    getActiveUniforms: (p, idx, n) => idx.map((i) => (n === gl.UNIFORM_OFFSET ? i * 64 : 16)),
+    getActiveUniform: (p, i) => all[i],
+    getUniformLocation: (p, name) => ({ uniform: name }),
+  });
+  return { gl, calls, lit };
+};
+
+const litStore = (renderSettings = RENDER_SETTINGS) => {
+  const litMat = { name: "atlas_mat", shader: LIT, keywords: [], floats: { _Smoothness: 0, _Metallic: 0, _Surface: 0 },
+                   colors: { _BaseColor: { r: 0.8, g: 0.8, b: 0.8, a: 1 } }, renderQueue: -1,
+                   texEnvs: { _BaseMap: { texture: null, scale: [1, 1], offset: [0, 0] } } };
+  const mats = [MATERIALS[0], litMat];
+  const ms = [card("near", -4, 0), card("wall", -6, 1, { normals: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1] })];
+  const nodes = ms.map((m) => ({ path: `room/${m.name}`, active: true, renderQueue: null }));
+  const hostDoc = { format: "ournotes.story-host/1", kind: "home", home: {
+    spotId: 1, talk: "area", characterId: null, spot: "host/spot/spot.json", room: "host/spot/room.glb", roomNodes: nodes,
+    roomMaterials: mats, situation: { name: "s", matched: true },
+    sceneRoot: { objRoot: null, lights: [], volumes: [], renderSettings }, lights: [], volume: null, spineMaterials: {},
+    shaders: { index: "host/shaders/shaders.json", names: Object.keys(DRAWN_SHADERS) },
+    blur: { iterations: 3, offset: 1, downsample: 1, blendRateMax: 0.3 }, ambient: null } };
+  const spotDoc = { spotId: 1, situationSettings: SETTINGS, characters: [], spineCharacters: [], skeletons: [] };
+  const index = Object.entries(DRAWN_SHADERS).map(([name, [, vs]], i) => ({ name, parsed: `s${i}.json`,
+    variants: vs.map(([pass, keywords], k) => ({ platform: "gles3", type: "GLES3", subShader: 0, pass, stage: "vertex", keywords,
+                                                 file: `s${i}/v${k}.glsl` })) }));
+  const text = { "host/host.json": JSON.stringify(hostDoc), "host/spot/spot.json": JSON.stringify(spotDoc),
+                 "host/shaders/shaders.json": JSON.stringify(index) };
+  Object.entries(DRAWN_SHADERS).forEach(([name, [parsed, vs]], i) => {
+    text[`host/shaders/s${i}.json`] = JSON.stringify(parsed);
+    vs.forEach(([, kw], k) => { text[`host/shaders/s${i}/v${k}.glsl`] = glsl(name === LIT ? `LIT ${kw.join(" ")}` : name); });
+  });
+  const bytes = { "host/spot/room.glb": buildGlb(ms, mats.map((m) => ({ name: m.name }))) };
+  return { store: new AssetStore({ text, bytes }), host: hostDoc };
+};
+const DRAWN_CAM = { ...CAM, orthographicSize: 5, rendererIndex: 0 };
+
+test("host: a drawn Lit room gets URP's lighting keywords, normals, light constants and the black reflection cube", async () => {
+  const { store, host } = litStore();
+  const { gl, calls } = litGL();
   const loop = new PlayerLoop(30);
-  const h = await SimpleHomeHost.create(null, store, loop, host, { camera: CAM, spine: null });   // headless: plays
+  const h = await SimpleHomeHost.create(gl, store, loop, host, { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null });
+  const litPrograms = [...h.lib.cache.values()].filter((p) => p.label.startsWith(LIT));
+  assert.deepEqual(litPrograms.map((p) => p.label), [`${LIT}#0.0[EVALUATE_SH_VERTEX _ADDITIONAL_LIGHTS_VERTEX]`]);
+  const target = { glTexture: { kind: "Texture", id: -1 }, bind() {} };
+  calls.length = 0;
+  h.renderScene(target, 64, 32);
+  // the normals are bound for the Lit pass; the cube sampler takes the black cube map
+  assert.ok(calls.some(([n, a]) => n === "enableVertexAttribArray" && a[0] === LIT_INPUTS.attribs.indexOf("in_NORMAL0")));
+  const cube = h.tex.blackCube;
+  assert.equal(cube.target, gl.TEXTURE_CUBE_MAP);
+  assert.ok(calls.some(([n, a]) => n === "bindTexture" && a[0] === gl.TEXTURE_CUBE_MAP && a[1] === cube.glTexture));
+  const u4 = (name) => calls.filter(([n, a]) => n === "uniform4fv" && a[0].uniform === name).map(([, a]) => Array.from(a[1]));
+  assert.deepEqual(u4("_MainLightColor").at(-1), [0, 0, 0, 1]);
+  assert.deepEqual(u4("unity_OrthoParams").at(-1), [10, 5, 0, 0]);                  // orthographicSize x aspect 2
+  const cam = h.camera.position;
+  assert.deepEqual(u4("_WorldSpaceCameraPos").at(-1).slice(0, 3), [cam.x, cam.y, cam.z].map(F));
+  gl.deleteTexture = () => {};
+  h.dispose();
+  // a lower quality level: no additional lights keyword
+  const low = litStore();
+  const h2 = await SimpleHomeHost.create(litGL().gl, low.store, new PlayerLoop(30), low.host,
+                                         { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 0, spine: null });
+  assert.deepEqual([...h2.lib.cache.values()].filter((p) => p.label.startsWith(LIT)).map((p) => p.label), [`${LIT}#0.0[EVALUATE_SH_VERTEX]`]);
+  h2.dispose();
+});
+
+test("host: a drawn session checks the lighting before any GL call", async () => {
+  const { store, host } = litStore({ ...RENDER_SETTINGS, m_Fog: 1 });
+  const loop = new PlayerLoop(30);
+  const h = await SimpleHomeHost.create(null, store, loop, host, { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null });
   h.gl = new Proxy({}, { get: () => { throw new Error("GL call"); } });
-  await assert.rejects(h._upload(), /home spot 1: room material tr \(Universal Render Pipeline\/Lit\) is not drawn by this player/);
+  await assert.rejects(h._upload(), /home spot 1: scene fog is not reproduced/);
+  h.graphics = null;
+  await assert.rejects(h._upload(), /home spot 1: URP lighting needs the scene's render settings/);
+  h.orthographicSize = undefined;
+  await assert.rejects(h._upload(), /orthographic size/);
   h.gl = null;
   h.dispose();
 });

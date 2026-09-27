@@ -10,8 +10,9 @@ import { skeletonDataVersion, spineRuntime, SpotSkeletonData } from "./spine.js"
 
 // The 3D part of the home host of the simple ADV player: the live home spot drawn behind a tap or area talk
 // (SpotManager with its SpotSceneRoot, SpotCameraController and UIBlurController).
-//   - room: the background prefab's cards (host/spot/room.glb) with the game's Unlit shaders and the saved material
-//     values, the renderers active after SpotBackground.Prepare, the floor queue override (room.js);
+//   - room: the background prefab's cards (host/spot/room.glb) with the game's shaders and the saved material values,
+//     the renderers active after SpotBackground.Prepare, the floor queue override (room.js), and for the Lit materials
+//     URP's lighting state of the main camera in the spot (spotLighting);
 //   - Spine characters (SpotSpineCharacter / SkeletonAnimation) through the page's Spine runtime (spine.js);
 //   - the main camera: default pose, focus and return tweens, Reset (camera.js);
 //   - the UI blur: rate ramp and the Dual Kawase pass on the camera colour (blur.js).
@@ -32,9 +33,6 @@ export const VOLUME_MISSING = "spot Volume post-processing";
 // and _characterId == the tapped SpotCharacter's _characterId), so it never plays such a talk; the session plays it
 // as a tap talk without the camera focus
 export const NO_TAP_TARGET = "no tap target for the talk's character in the spot (camera focus not played)";
-// room shaders that need URP's lighting state (the per-camera lighting keywords and the light uniforms), which this
-// host does not set: a drawn session refuses a room with such a material
-export const LIT_ROOM_SHADERS = new Set(["Universal Render Pipeline/Lit"]);
 
 // CameraClearFlags (1 Skybox, 2 SolidColor, 3 Depth, 4 Nothing)
 const CLEAR_SKYBOX = 1, CLEAR_SOLID = 2;
@@ -77,10 +75,120 @@ export const roomMatrix = (background, roomRoot) => {
   return mat4.mul(background, inverseTRS(t, q, s));
 };
 
+// worldToLocal of the room file's baked space (the inverse of roomMatrix: the Transform chain's inverse TRS in reverse
+// order): roomRoot's TRS x the background root's inverse TRS x objRoot's inverse TRS
+export const roomInverse = (settings, objRoot, roomRoot) => {
+  const p = settings.backgroundPosition, e = settings.backgroundRotation, s = settings.backgroundScale;
+  if (!p || !e || !s) throw new Error("situationSettings: backgroundPosition / Rotation / Scale missing");
+  const parentRot = objRoot ? objRoot.rotation : IDENTITY_Q;
+  let m = inverseTRS(p, quat.mul(conj(parentRot), quat.euler(e.x, e.y, e.z)), s);
+  if (objRoot) m = mat4.mul(m, inverseTRS(objRoot.position, objRoot.rotation, objRoot.scale));
+  if (!roomRoot) return m;
+  return mat4.mul(mat4.trs(roomRoot.localPosition, roomRoot.localRotation, roomRoot.localScale), m);
+};
+
+// ------------------------------------------------------------------------------------------------ URP lighting
+// UnityEngine.Rendering.Universal ShEvalMode (Auto 0, PerVertex 1, Mixed 2, PerPixel 3), LightRenderingMode (Disabled 0,
+// PerPixel 1, PerVertex 2), RenderingMode (Forward 0, Deferred 1, ForwardPlus 2); UnityEngine.Rendering.AmbientMode
+// (Skybox 0, Trilight 1, Flat 3, Custom 4), DefaultReflectionMode (Skybox 0, Custom 1)
+const SH_AUTO = 0, SH_VERTEX = 1, SH_MIXED = 2, SH_PIXEL = 3;
+const LIGHTS_DISABLED = 0, LIGHTS_PER_PIXEL = 1, LIGHTS_PER_VERTEX = 2;
+const RENDERING_FORWARD = 0;
+const AMBIENT_FLAT = 3;
+const REFLECTION_SKYBOX = 0;
+// renderer features that set lighting keywords of their own (screen-space occlusion, decals, screen-space shadows)
+const LIGHTING_FEATURES = new Set(["ScreenSpaceAmbientOcclusion", "DecalRendererFeature", "ScreenSpaceShadows"]);
+const white = (c) => !!c && c.r === 1 && c.g === 1 && c.b === 1;
+
+// The lighting state URP gives the main camera's draws in the spot, which holds no light: {pipeline, renderer,
+// keywords, globals, perObject}. Raises on a setting whose effect is not reproduced here.
+//   graphics        scene.json `player`: quality levels, pipeline assets, renderers
+//   quality         the quality level (GameConfig.SetBaseQualityModeInternal: QualitySettings.SetQualityLevel(
+//                   BaseQualityMode)); its pipeline asset, else GraphicsSettings' default one
+//   rendererIndex   the camera's UniversalAdditionalCameraData m_RendererIndex (-1: the asset's default renderer)
+//   renderSettings  the active scene's RenderSettings (SpotManager.ActiveSpotScene makes the "Spot" scene active)
+//   lights          the Light / ReflectionProbe components of the scene and the placed prefabs ({path, active, m_Enabled})
+// Keywords (UniversalRenderer.Setup, ForwardLights.Setup, MainLightShadowCasterPass / AdditionalLightsShadowCasterPass
+// .Setup): EVALUATE_SH_VERTEX / EVALUATE_SH_MIXED by the asset's SH evaluation mode; _ADDITIONAL_LIGHTS_VERTEX /
+// _ADDITIONAL_LIGHTS when the asset supports additional lights (the renderer strips their off variants, so the keyword
+// is on without an additional light); the asset's reflection probe blending / box projection keywords; no shadow, mixed
+// lighting, light layer, cookie or Forward+ keyword. Constants: SetupMainLightConstants without a main light (URP's
+// default light: position (0, 0, 1, 0), colour black with w 1, not subtractive); SetupAdditionalLightConstants without
+// an additional light (_AdditionalLightsCount 0).
+// ENGINE: PlatformAutoDetect.ShAutoDetect gives PerVertex for Auto on a mobile shader API (GLES3); UniversalRenderer
+// sets stripAdditionalLightOffVariants outside XR.
+// ENGINE: the ambient probe of a Flat ambient is built natively from the ambient colour; a white Flat ambient is taken as
+// SH(N) = 1 (L0 only), as the ADV renderer does, and other ambients are refused.
+// ENGINE: the default reflection of a Skybox-mode scene without a skybox material (and without a custom cube) is taken
+// as black; its HDR decode values (1, 1, 0, 0) only scale that black.
+// ENGINE: unity_LightData (native per-object light data): x the offset of the per-object light indices (0), y their
+// count (0), z 1 (the main light's culling-mask factor; it multiplies the black main light).
+export const spotLighting = ({ graphics, quality, rendererIndex, renderSettings, lights = [], what = "home spot" }) => {
+  if (!graphics || !graphics.pipelines || !graphics.renderers)
+    throw new Error(`${what}: URP lighting needs the scene's render settings (scene.json player)`);
+  const level = (graphics.qualityLevels || [])[quality];
+  if (!level) throw new Error(`${what}: quality level ${quality} is not in the render settings`);
+  const pipeName = level.customRenderPipeline || graphics.defaultPipeline, pipe = graphics.pipelines[pipeName];
+  if (!pipe) throw new Error(`${what}: pipeline asset ${pipeName} is not in the render settings`);
+  const index = rendererIndex === undefined || rendererIndex === null || rendererIndex < 0 ? pipe.m_DefaultRendererIndex : rendererIndex;
+  const rendName = (pipe.m_RendererDataList || [])[index], rend = graphics.renderers[rendName];
+  if (!rend) throw new Error(`${what}: renderer ${index} of ${pipeName} is not in the render settings`);
+  if (rend.m_RenderingMode !== RENDERING_FORWARD)
+    throw new Error(`${what}: renderer ${rendName} rendering mode ${rend.m_RenderingMode} (only Forward is reproduced)`);
+  for (const f of rend.m_RendererFeatures || []) {
+    const cls = String(f.class || "").split(".").pop();
+    if (f.m_Active && LIGHTING_FEATURES.has(cls)) throw new Error(`${what}: renderer feature ${cls} of ${rendName} is not reproduced`);
+  }
+  const lit = lights.find((l) => l.active && l.m_Enabled);
+  if (lit) throw new Error(`${what}: ${lit.type || "Light"} ${lit.path} is not reproduced (the spot is drawn without lights)`);
+  const rs = renderSettings;
+  if (!rs) throw new Error(`${what}: the Spot scene's RenderSettings (home.sceneRoot.renderSettings) are missing`);
+  if (rs.m_Fog) throw new Error(`${what}: scene fog is not reproduced`);
+  if (rs.m_Sun) throw new Error(`${what}: RenderSettings.sun is not reproduced`);
+  if (rs.lightmaps) throw new Error(`${what}: lightmaps are not reproduced`);
+  if (rs.m_AmbientMode !== AMBIENT_FLAT || !white(rs.m_AmbientSkyColor) || rs.m_AmbientIntensity !== 1)
+    throw new Error(`${what}: ambient mode ${rs.m_AmbientMode} is not reproduced (only a white Flat ambient)`);
+  if (rs.m_SkyboxMaterial || rs.m_CustomReflection || rs.m_DefaultReflectionMode !== REFLECTION_SKYBOX)
+    throw new Error(`${what}: a default reflection other than the empty skybox's is not reproduced`);
+  // the shadow casters' empty shadow map path, taken when the asset enables shadows and no light casts
+  if (pipe.m_MainLightShadowsSupported && pipe.m_MainLightRenderingMode === LIGHTS_PER_PIXEL)
+    throw new Error(`${what}: ${pipeName} main light shadows (the empty shadow map) are not reproduced`);
+  if (pipe.m_AdditionalLightShadowsSupported && pipe.m_AdditionalLightsRenderingMode === LIGHTS_PER_PIXEL)
+    throw new Error(`${what}: ${pipeName} additional light shadows (the empty shadow map) are not reproduced`);
+  if (pipe.m_SupportsLightLayers) throw new Error(`${what}: ${pipeName} light layers are not reproduced`);
+  const keywords = [];
+  const sh = pipe.m_ShEvalMode === SH_AUTO ? SH_VERTEX : pipe.m_ShEvalMode;
+  if (sh === SH_VERTEX) keywords.push("EVALUATE_SH_VERTEX");
+  else if (sh === SH_MIXED) keywords.push("EVALUATE_SH_MIXED");
+  else if (sh !== SH_PIXEL) throw new Error(`${what}: ${pipeName} SH evaluation mode ${pipe.m_ShEvalMode}`);
+  const add = pipe.m_AdditionalLightsRenderingMode;
+  if (add === LIGHTS_PER_VERTEX) keywords.push("_ADDITIONAL_LIGHTS_VERTEX");
+  else if (add === LIGHTS_PER_PIXEL) keywords.push("_ADDITIONAL_LIGHTS");
+  else if (add !== LIGHTS_DISABLED) throw new Error(`${what}: ${pipeName} additional lights mode ${add}`);
+  if (pipe.m_ReflectionProbeBlending) keywords.push("_REFLECTION_PROBE_BLENDING");
+  if (pipe.m_ReflectionProbeBoxProjection) keywords.push("_REFLECTION_PROBE_BOX_PROJECTION");
+  const zeros = (n) => new Float32Array(n * 4);
+  const globals = {
+    _MainLightPosition: [0, 0, 1, 0], _MainLightColor: [0, 0, 0, 1],
+    // not written by URP without an additional light, and not read with a count of 0
+    _AdditionalLightsCount: [0, 0, 0, 0], _AdditionalLightsPosition: zeros(16), _AdditionalLightsColor: zeros(16),
+    _AdditionalLightsAttenuation: zeros(16), _AdditionalLightsSpotDir: zeros(16),
+  };
+  const perObject = {
+    unity_LightData: [0, 0, 1, 0], unity_LightIndices: zeros(2), unity_SpecCube0_HDR: [1, 1, 0, 0],
+    unity_SHAr: [0, 0, 0, 1], unity_SHAg: [0, 0, 0, 1], unity_SHAb: [0, 0, 0, 1],
+    unity_SHBr: [0, 0, 0, 0], unity_SHBg: [0, 0, 0, 0], unity_SHBb: [0, 0, 0, 0], unity_SHC: [0, 0, 0, 0],
+  };
+  return { pipeline: pipeName, renderer: rendName, keywords, globals, perObject };
+};
+
 export class SimpleHomeHost {
   // gl: WebGL2 context or null; store: the story's AssetStore; loop: the session's PlayerLoop; host: host/host.json;
-  // opts: {camera: {near, far, clearFlags, clearColor: [r, g, b, a]} of the story scene's main camera,
+  // opts: {camera: {near, far, clearFlags, clearColor: [r, g, b, a], orthographicSize, rendererIndex} of the story
+  //        scene's main camera (Camera and UniversalAdditionalCameraData),
+  //        graphics: scene.json `player` (the render settings tree), quality: the quality level (BaseQualityMode),
   //        spine: a Spine runtime (default globalThis.spine; null for none)}
+  // A drawn host needs graphics, quality and the camera's orthographicSize (URP's lighting state, spotLighting).
   static async create(gl, store, loop, host, opts = {}) {
     const h = new SimpleHomeHost(gl, store, loop, host, opts);
     try { if (gl) await h._upload(); } catch (e) { h.dispose(); throw e; }
@@ -103,7 +211,12 @@ export class SimpleHomeHost {
     this.rootMatrix = objRoot ? mat4.trs(objRoot.position, objRoot.rotation, objRoot.scale) : mat4.identity();
     this.backgroundMatrix = backgroundMatrix(settings, objRoot);
     this.roomMatrix = roomMatrix(this.backgroundMatrix, home.roomRoot);
+    this.roomInverse = roomInverse(settings, objRoot, home.roomRoot);
     this.camera = new SpotCamera(loop, settings, { near: cam.near, far: cam.far });
+    this.orthographicSize = cam.orthographicSize;
+    this.rendererIndex = cam.rendererIndex;
+    this.graphics = opts.graphics || null;
+    this.quality = opts.quality;
     this.clearFlags = cam.clearFlags ?? CLEAR_SOLID;
     this.clearColor = colorOf(cam.clearColor);
     this.blur = new UIBlur(loop);
@@ -177,16 +290,27 @@ export class SimpleHomeHost {
   _on(phase, fn) { this.loop.on(phase, fn); this._hooks.push([phase, fn]); }
 
   // ------------------------------------------------------------------------------------------------ GPU resources
+  // URP's lighting state of the main camera in the spot (spotLighting): checked before any GL call
+  _lighting() {
+    const home = this.home, root = home.sceneRoot || {}, what = `home spot ${home.spotId}`;
+    if (typeof this.orthographicSize !== "number")
+      throw new Error(`${what}: the main camera's orthographic size (opts.camera.orthographicSize) is needed to draw`);
+    return spotLighting({ graphics: this.graphics, quality: this.quality, rendererIndex: this.rendererIndex,
+                          renderSettings: root.renderSettings, lights: [...(root.lights || []), ...(home.lights || [])], what });
+  }
+
+  // the keywords of a material's programs: its own and the camera's global lighting keywords
+  _keywords(mat) { return [...(mat.keywords || []), ...this.lighting.keywords]; }
+
   async _upload() {
-    for (const m of this.room.materials)
-      if (LIT_ROOM_SHADERS.has(m.shader))
-        throw new Error(`home spot ${this.home.spotId}: room material ${m.name} (${m.shader}) is not drawn by this player`);
+    this.lighting = this._lighting();
     const gl = this.gl;
     this.lib = new ShaderLib(gl, this.shaderBase, this.store);
     this.vao = gl.createVertexArray();
     this.tex = {
       white: GLTex.solid(gl, [255, 255, 255, 255], "white"), black: GLTex.solid(gl, [0, 0, 0, 255], "black"),
       gray: GLTex.solid(gl, [128, 128, 128, 255], "gray"), bump: GLTex.solid(gl, [128, 128, 255, 255], "bump"),
+      blackCube: this._blackCube(),
     };
     this.buffers = [];
     this.textures = [];
@@ -208,6 +332,7 @@ export class SimpleHomeHost {
       part.gpu = { in_POSITION0: { buffer: attr(p.positionAccessor, p.positions), size: 3, type: gl.FLOAT, normalized: false },
                    in_TEXCOORD0: { buffer: attr(p.uvAccessor, p.uvs), size: 2, type: gl.FLOAT, normalized: false },
                    index: buf(p.indices, gl.ELEMENT_ARRAY_BUFFER), count: p.indices.length };
+      if (p.normals) part.gpu.in_NORMAL0 = { buffer: attr(p.normalAccessor, p.normals), size: 3, type: gl.FLOAT, normalized: false };
       const texs = {};
       for (const [slot, t] of Object.entries(part.material.texEnvs || {})) {
         if (t.texture === null || t.texture === undefined) continue;
@@ -216,7 +341,7 @@ export class SimpleHomeHost {
       }
       part.textures = texs;
       for (const pass of part.passes) {
-        this.lib.program(part.material.shader, pass, part.material.keywords || [], part.subShader);
+        this.lib.program(part.material.shader, pass, this._keywords(part.material), part.subShader);
         this.lib.state(part.material.shader, pass, part.material.floats || {}, part.subShader);
       }
     }
@@ -225,7 +350,7 @@ export class SimpleHomeHost {
       this.pageTextures = new Map();
       for (const page of this.spineData.pages()) this.pageTextures.set(page, await this._pageTexture(page));
       for (const m of new Set(this.pageMaterials.values()))
-        for (const pass of this.shaders.forwardPasses(m.shader)) this.lib.program(m.shader, pass, m.keywords || [], this.shaders.subShader(m.shader));
+        for (const pass of this.shaders.forwardPasses(m.shader)) this.lib.program(m.shader, pass, this._keywords(m), this.shaders.subShader(m.shader));
     }
     if (!this.shaders.has(BLUR_SHADER)) throw new Error(`host shaders: ${BLUR_SHADER} not packed`);
     this.kawase = new DualKawaseBlur(gl, this.lib);
@@ -238,6 +363,20 @@ export class SimpleHomeHost {
     const bmp = await createImageBitmap(new Blob([im.bytes], { type: im.mimeType }),
                                         { premultiplyAlpha: "none", colorSpaceConversion: "none", imageOrientation: "flipY" });
     return this._texture(bmp, info.sampler, im.name);
+  }
+
+  // the default reflection cube of the spot (spotLighting): black, 1 x 1 per face
+  _blackCube() {
+    const gl = this.gl, t = gl.createTexture(), px = new Uint8Array([0, 0, 0, 255]);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, t);
+    for (let f = 0; f < 6; f++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const tex = new GLTex(gl, t, 1, 1, "black cube");
+    tex.target = gl.TEXTURE_CUBE_MAP;
+    return tex;
   }
 
   // an atlas page PNG of the spot's spine directory
@@ -342,11 +481,14 @@ export class SimpleHomeHost {
       bits |= gl.COLOR_BUFFER_BIT;
     }
     gl.clearDepth(1); gl.clearStencil(0); gl.clear(bits);
-    const cam = this.camera, V = cam.viewMatrix(), P = cam.projection(width / height), t = this.loop.time;
+    const cam = this.camera, V = cam.viewMatrix(), aspect = width / height, P = cam.projection(aspect), t = this.loop.time;
+    const camPos = cam.position, os = this.orthographicSize;
+    // ScriptableRenderer.SetPerCameraShaderVariables (a perspective camera: unity_OrthoParams.w 0) and the lighting
     const globals = { unity_MatrixVP: mat4.mul(P, V), unity_MatrixV: V, _ProjectionParams: [1, cam.near, cam.far, 1 / cam.far],
                       _ScreenParams: [width, height, 1 + 1 / width, 1 + 1 / height], _Time: [t / 20, t, t * 2, t * 3],
-                      _GlobalMipBias: [0, 0] };
-    const camPos = cam.position, items = this.room.drawItems(this.roomMatrix, camPos).map((it) => ({
+                      _GlobalMipBias: [0, 0], _WorldSpaceCameraPos: [camPos.x, camPos.y, camPos.z],
+                      unity_OrthoParams: [os * aspect, os, 0, 0], ...this.lighting.globals, unity_SpecCube0: this.tex.blackCube };
+    const items = this.room.drawItems(this.roomMatrix, camPos).map((it) => ({
       ...it, draw: () => this._drawRoomPart(it.part, globals) }));
     for (const s of this.skeletons) {
       if (!s.mesh || s.skeleton.dirty) this._uploadSkeleton(s);
@@ -397,9 +539,10 @@ export class SimpleHomeHost {
 
   _drawRoomPart(part, globals) {
     const gl = this.gl, mat = part.material, M = this.roomMatrix;
-    const sheets = [{ unity_ObjectToWorld: M }, ...this._materialSheets(mat, part.textures), globals];
+    const sheets = [{ unity_ObjectToWorld: M, unity_WorldToObject: this.roomInverse, ...this.lighting.perObject },
+                    ...this._materialSheets(mat, part.textures), globals];
     for (const pass of part.passes) {
-      const prog = this.lib.program(mat.shader, pass, mat.keywords || [], part.subShader);
+      const prog = this.lib.program(mat.shader, pass, this._keywords(mat), part.subShader);
       prog.apply(sheets);
       applyState(gl, this.lib.state(mat.shader, pass, mat.floats || {}, part.subShader));
       this._frontFace(M);
@@ -429,7 +572,7 @@ export class SimpleHomeHost {
       const mat = this.pageMaterials.get(d.page), sub = this.shaders.subShader(mat.shader);
       const sheets = [{ unity_ObjectToWorld: s.matrix }, ...this._materialSheets(mat, { _MainTex: this.pageTextures.get(d.page) }), globals];
       for (const pass of this.shaders.forwardPasses(mat.shader)) {
-        const prog = this.lib.program(mat.shader, pass, mat.keywords || [], sub);
+        const prog = this.lib.program(mat.shader, pass, this._keywords(mat), sub);
         prog.apply(sheets);
         applyState(gl, this.lib.state(mat.shader, pass, mat.floats || {}, sub));
         this._frontFace(s.matrix);
