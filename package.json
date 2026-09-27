@@ -1,6 +1,6 @@
 {
   "name": "ournotes-player",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Browser chart player for BanG Dream! Our Notes charts: WebGL2 + WebAudio, custom element <ournotes-player>",
   "keywords": [
     "bang-dream",

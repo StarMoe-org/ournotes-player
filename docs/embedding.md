@@ -8,21 +8,20 @@ player. All of them read a chart from a site laid out as below.
 With a bundler:
 
 ```sh
-npm install github:empty-sekai/ournotes-player
+npm install ournotes-player
 ```
 
 ```js
 import "ournotes-player/element";
 ```
 
-Installing from GitHub builds `dist/` during the install. Once the package is published on npm,
-`npm install ournotes-player` installs the same package.
+Installing from GitHub (`npm install github:empty-sekai/ournotes-player`) builds `dist/` during the install.
 
 From a CDN, without a build step (the jsDelivr npm URL works once the package is on npm; until then, serve
 `dist/ournotes-player.element.min.js` of the installed package, or of a checkout after `npm run build`, with the page):
 
 ```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/ournotes-player/dist/ournotes-player.element.min.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/ournotes-player@0.1/dist/ournotes-player.element.min.js"></script>
 
 <ournotes-player src="https://example.org/site/charts/100001_expert.json" controls
                  style="max-width: 960px"></ournotes-player>

@@ -43,11 +43,10 @@ combo, notes and UI are those of an uninterrupted run at that time.
 ## Quick start
 
 ```sh
-npm install github:empty-sekai/ournotes-player
+npm install ournotes-player
 ```
 
-Installing from GitHub builds `dist/` during the install. Once the package is published on npm,
-`npm install ournotes-player` installs the same package.
+Installing from GitHub (`npm install github:empty-sekai/ournotes-player`) builds `dist/` during the install.
 
 Custom element, with a bundler:
 
@@ -63,7 +62,7 @@ Without a bundler, from a CDN (once the package is on npm; until then, serve the
 with the page):
 
 ```html
-<script type="module" src="https://cdn.jsdelivr.net/npm/ournotes-player/dist/ournotes-player.element.min.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/ournotes-player@0.1/dist/ournotes-player.element.min.js"></script>
 ```
 
 JavaScript module:
