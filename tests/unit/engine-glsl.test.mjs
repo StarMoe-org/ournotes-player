@@ -1,5 +1,5 @@
 // UnityProgram.apply's sampler binding (src/engine/glsl.js): a cube sampler takes a cube map, every other sampler a 2D
-// texture, and a texture of the other kind is refused. UnityProgram.reads names the program's inputs. passState /
+// texture, and a texture of the other kind is refused; vector values upload the uniform's component count. UnityProgram.reads names the program's inputs. passState /
 // applyState: a pass's Stencil block (stencilOp) drives both faces from the material's stencil properties. Synthetic
 // inputs only.
 import assert from "node:assert/strict";
@@ -23,6 +23,21 @@ test("UnityProgram.apply: cube samplers bind TEXTURE_CUBE_MAP, other samplers TE
   assert.deepEqual(binds, [["bindTexture", gl.TEXTURE_CUBE_MAP, cube.glTexture], ["bindTexture", gl.TEXTURE_2D, flat.glTexture]]);
   assert.throws(() => p.apply([{ _Env: flat, _MainTex: flat }]), /p: sampler _Env needs a cube map/);
   assert.throws(() => p.apply([{ _Env: cube, _MainTex: cube }]), /p: sampler _MainTex needs a 2D texture/);
+});
+
+test("UnityProgram.apply: a float4 value on a float / float2 / float3 uniform uploads its leading components", () => {
+  const calls = [];
+  const gl = headlessGL({ onCall: (n, a) => calls.push([n, ...a]) });
+  const p = Object.assign(program(gl, []), {
+    uniforms: [["_A", "FLOAT"], ["_B", "FLOAT_VEC2"], ["_C", "FLOAT_VEC3"], ["_D", "FLOAT_VEC4"]]
+      .map(([name, type]) => ({ name, loc: { name }, type: gl[type], size: 1 })),
+  });
+  calls.length = 0;
+  const v = [1, 2, 3, 4];
+  p.apply([{ _A: v, _B: v, _C: { x: 5, y: 6, z: 7, w: 8 }, _D: v }]);
+  const up = calls.filter(([n]) => n.startsWith("uniform")).map(([n, loc, x]) => [n, loc.name, Array.from(x)]);
+  assert.deepEqual(up, [["uniform1fv", "_A", [1]], ["uniform2fv", "_B", [1, 2]], ["uniform3fv", "_C", [5, 6, 7]],
+                        ["uniform4fv", "_D", [1, 2, 3, 4]]]);
 });
 
 test("UnityProgram.reads: an active uniform, uniform block member (matrix name without hlslcc_mtx4x4) or sampler", () => {

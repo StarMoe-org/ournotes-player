@@ -153,10 +153,12 @@ export class UnityProgram {
     for (const u of this.uniforms) {
       const v = UnityProgram.lookup(sheets, UnityProgram.propertyName(u.name), this.label);
       const f = UnityProgram.floats(v, 4);
+      // a float4 value (Unity's vector properties) on a float / float2 / float3 uniform gives its leading components
+      const lead = (n) => (f.length === n * u.size ? f : Float32Array.from(f).subarray(0, n * u.size));
       switch (u.type) {
-        case gl.FLOAT: gl.uniform1fv(u.loc, f.length === u.size ? f : Float32Array.from(f).subarray(0, u.size)); break;
-        case gl.FLOAT_VEC2: gl.uniform2fv(u.loc, f); break;
-        case gl.FLOAT_VEC3: gl.uniform3fv(u.loc, f); break;
+        case gl.FLOAT: gl.uniform1fv(u.loc, lead(1)); break;
+        case gl.FLOAT_VEC2: gl.uniform2fv(u.loc, lead(2)); break;
+        case gl.FLOAT_VEC3: gl.uniform3fv(u.loc, lead(3)); break;
         case gl.FLOAT_VEC4: gl.uniform4fv(u.loc, f); break;
         case gl.INT: gl.uniform1iv(u.loc, Int32Array.from(f)); break;
         case gl.INT_VEC4: gl.uniform4iv(u.loc, Int32Array.from(f)); break;

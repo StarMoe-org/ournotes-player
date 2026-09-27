@@ -133,7 +133,7 @@ LiveCameraMath.globals = (cam, m, w, h, time, dt) => {
     unity_MatrixVP: m.viewProj, unity_MatrixInvVP: iv(m.viewProj), glstate_matrix_projection: P,
     unity_CameraProjection: P, unity_CameraInvProjection: iv(P), unity_CameraToWorld: m.cameraToWorld,
     unity_WorldToCamera: m.worldToCamera,
-    _WorldSpaceCameraPos: [m.position.x, m.position.y, m.position.z, 0],
+    _WorldSpaceCameraPos: [m.position.x, m.position.y, m.position.z],
     _ProjectionParams: [1, n, f, 1 / f], _ScreenParams: [w, h, 1 + 1 / w, 1 + 1 / h],
     _ZBufferParams: [zx, zy, zx / f, zy / f], unity_OrthoParams: [ow, oh, 0, cam.orthographic ? 1 : 0],
     _Time: [time / 20, time, time * 2, time * 3], _SinTime: [Math.sin(time / 8), Math.sin(time / 4), Math.sin(time / 2), Math.sin(time)],
