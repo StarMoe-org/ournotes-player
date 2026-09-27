@@ -146,7 +146,7 @@ export class Live2DCharacter {
                  exprFade: -1, hasAppliedExpression: false, nextMotionFade: -1 };
     // motion layer + Animator
     this.layer = { list: [], finished: true, paused: false };
-    this.anim = null;                   // { clip, time, speed }
+    this.anim = null;                   // { clip, time, speed, duration }
     // CubismRenderController.SetMultiplyTexture(null, 0.3): the call the game makes without a stage (white texture)
     this.multiplyTexture = { texture: null, uv: { x: 1, y: 1, z: 0, w: 0 }, intensity: 0.3, amplitude: { x: 0, y: 0 },
                              frequency: 0.5 };
@@ -454,7 +454,8 @@ export class Live2DCharacter {
     }
     L.push(pm);
     this.layer.finished = false;
-    this.anim = { clip, time: 0, speed: this.motionSpeed };
+    // CubismMotionState.CreateCubismMotionState with isLoop false: the clip playable's duration is length - 0.0001
+    this.anim = { clip, time: 0, speed: this.motionSpeed, duration: F(clip.length + F(-0.0001)) };
     if (L.length > 1 && pm.fadeInTime > 0) {
       const prev = L[L.length - 2];
       const t2 = F(t + (prev.motion.fadeOutTime >= 0 ? prev.motion.fadeOutTime : 0));
@@ -514,12 +515,15 @@ export class Live2DCharacter {
   anyMotionPlaying() { return !this.layer.finished; }
 
   // PreLateUpdate DirectorUpdateAnimation: the newest clip playable advances and its curves are written (a model
-  // curve on CubismEyeBlinkController.EyeOpening replaces the auto eye blink's value while its clip is the newest)
+  // curve on CubismEyeBlinkController.EyeOpening replaces the auto eye blink's value while its clip is the newest).
+  // Past its duration the playable holds: a motion that has ended keeps its last pose until another one plays.
   // ENGINE: a clip playable created in Update is first sampled after one advance (at t = deltaTime x speed).
+  // ENGINE: a playable whose time reaches its duration stops there (IsDone); the clip is sampled at the duration.
   animatorUpdate() {
     if (!this.showing || !this.anim) return;
     const a = this.anim;
     if (!this.layer.paused) a.time += this.loop.deltaTime * a.speed;
+    if (a.time > a.duration) a.time = a.duration;
     a.clip.write(a.time, this.params.value, this);
   }
 

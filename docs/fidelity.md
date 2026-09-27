@@ -135,9 +135,10 @@ material values of the prefab and the property values the Cubism renderer sets.
 Reproduced: the loader's initialisation and warmup and the story's `In`; the update order of one frame (the
 controller's Update, the Animator, the update controller's chain in execution order, the model update at the end of
 PreLateUpdate) and the resulting display latency of two model updates; motion fades (recursive, from the parameter
-store's snapshot), the replay of the default motion, expression blending, the game's eye blink phases and intervals,
-the breath motion, physics with its fixed-rate steps and interpolation, the double-buffered meshes, sorting, vertex
-colours, the mask groups, tiles and mask texture. Arithmetic is float32 in source order, as for the chart player.
+store's snapshot), the replay of the default motion, a motion that has ended holding its last pose, expression
+blending, the game's eye blink phases and intervals, the breath motion, physics with its fixed-rate steps and
+interpolation, the double-buffered meshes, sorting, vertex colours, the mask groups, tiles and mask texture.
+Arithmetic is float32 in source order, as for the chart player.
 
 Fixed settings:
 
@@ -384,6 +385,7 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 
 - Mesh.RecalculateBounds is native; centre = (max + min) * 0.5, extents = (max - min) * 0.5 in float32.
 - a clip playable created in Update is first sampled after one advance (at t = deltaTime x speed).
+- a playable whose time reaches its duration stops there (IsDone); the clip is sampled at the duration.
 
 **`src/live2d/crilips/index.js`**
 
@@ -408,7 +410,7 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 
 - Mecanim samples streamed clips natively; this is the cubic form of the stored keys, float32 in source order.
 - the Animator leaves a binding without a transform at its path unbound.
-- what the Animator samples past a clip playable's duration is native; wrapped around the length here.
+- Mecanim's sampling of a clip past its length (m_LoopTime) is native; wrapped or clamped here.
 
 **`src/live2d/motionsync.js`**
 

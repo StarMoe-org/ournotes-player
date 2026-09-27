@@ -56,6 +56,11 @@ const clip = (name, id, len, value) => ({
   bindings: [{ path: "Parameters/ParamAngleX", class: "CubismParameter", attribute: "Value" }],
   streamed: { curveCount: 0, frames: [] }, constant: [value],
 });
+// ParamAngleX from 0 to `to` over the clip's length (one streamed cubic segment, linear)
+const ramp = (name, id, len, to) => ({
+  ...clip(name, id, len, 0), constant: [],
+  streamed: { curveCount: 1, frames: [[0, [[0, 0, 0, F(to / len), 0]]], [len, [[0, 0, 0, 0, to]]]] },
+});
 
 const prefab = ({ mouthTags = ["ParamMouthOpenY"] } = {}) => {
   const root = "model";
@@ -67,12 +72,14 @@ const prefab = ({ mouthTags = ["ParamMouthOpenY"] } = {}) => {
   return { key: "model", canvas: {}, nodes: [
     node(root, [
       mb("Live2DCharacter", { DefaultMotionName: "mtn_idle", DefaultExpressionName: "exp_idle", BasePosition: { x: 0, y: 0, z: 0 },
-                              BaseScale: 1, _motionList: [clip("mtn_idle", -1, 2, 0), clip("mtn_turn", -2, 1, 30)],
+                              BaseScale: 1, _motionList: [clip("mtn_idle", -1, 2, 0), clip("mtn_turn", -2, 1, 30),
+                                            ramp("mtn_nod", -4, 1, 20)],
                               _expressionList: ["exp_idle", "exp_closed"] }),
-      mb("CubismFadeController", { CubismFadeMotionList: { MotionInstanceIds: [-1, -2, -3], CubismFadeMotionObjects: [
+      mb("CubismFadeController", { CubismFadeMotionList: { MotionInstanceIds: [-1, -2, -3, -4], CubismFadeMotionObjects: [
         fadeData("mtn_idle", 2, ["ParamAngleX", "ParamEyeLOpen"], [curve(2, 0, 0), curve(2, 1, 1)]),
         fadeData("mtn_turn", 1, ["ParamAngleX"], [curve(1, 30, 30)]),
         fadeData("misc_sway", 2, ["ParamLoopA", "ParamMissing"], [curve(2, 0, 1), curve(2, 0, 1)]),
+        fadeData("mtn_nod", 1, ["ParamAngleX"], [curve(1, 0, 20)]),
       ] } }),
       mb("CubismExpressionController", { UseLegacyBlendCalculation: 0, CurrentExpressionIndex: -1, CurrentFadeInTime: -1,
         ExpressionsList: { CubismExpressionObjects: [
@@ -200,6 +207,25 @@ test("applyStateAtMotionTime seeks the newest clip forward to min(s, length - 0.
   ch.pause();
   ch.applyStateAtMotionTime(0.9);                            // not while paused
   assert.equal(ch.canApplyStateImmediately, false);
+});
+
+test("a motion that has ended holds its last pose: the clip playable stops at length - 0.0001", async () => {
+  const { ch, steps } = await shown();
+  await steps(2);
+  ch.playMotion("mtn_nod", 0);
+  await steps(15);
+  const mid = P(ch, "ParamAngleX");
+  assert.ok(mid > 5 && mid < 15, `half way: ${mid}`);
+  await steps(20);                                           // past the length (1 s): the motion has ended
+  assert.equal(ch.anyMotionPlaying(), false);
+  assert.equal(ch.ctl.currentMotion, "mtn_nod");             // not replayed: no LoopMotion, not the default motion
+  const end = F(1 + F(-0.0001));
+  assert.equal(ch.anim.time, end);
+  const held = [];
+  for (let i = 0; i < 60; i++) { await steps(1); held.push(P(ch, "ParamAngleX")); }
+  assert.ok(held.every((v) => v === held[0]), "the pose does not move");
+  assert.ok(held[0] > 19.9, `the last pose: ${held[0]}`);
+  assert.equal(ch.anim.time, end);
 });
 
 test("the parameter loop plays misc_ motions only, fades by the sine ease and stops at weight 0", async () => {

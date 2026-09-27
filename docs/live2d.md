@@ -173,8 +173,9 @@ true` for the page to show through, or draw over an opaque background of your ow
   from a seeded random stream); the breath parameter oscillates; physics follows the head and body parameters. A
   model without a `CubismPhysicsController` has no physics; the `physics` switch has no effect on it.
 - **Motions** fade in over their own fade-in time unless another is given, and the previous motion fades out under it,
-  as in the game. The game plays the next story motion when the story asks for it; the viewer returns to the default
-  motion after a motion ends, unless `loop` is set.
+  as in the game. A motion that has ended is not replayed: it holds its last pose until the next one plays. The game
+  plays the next story motion when the story asks for it; the viewer returns to the default motion after a motion
+  ends, unless `loop` is set.
 - **Frame rate**: 30 frames per second of game time, the story screen's rate. A frame shows the model as computed two
   updates earlier, as the game does.
 - **Mouth**: the mouth controller sets `ParamMouthOpenY` only when the model tags that parameter

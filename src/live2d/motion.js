@@ -51,9 +51,9 @@ export class Live2DClip {
     this.constants = constants.filter((c) => !field(c) && c.param >= 0);
   }
 
-  // The game plays every clip with its duration set to length - 0.0001 on a clip with m_LoopTime set; past its length
-  // the clip is sampled wrapped around it.
-  // ENGINE: what the Animator samples past a clip playable's duration is native; wrapped around the length here.
+  // A clip with m_LoopTime set is sampled wrapped around its length, one without it clamped to it. A character's clip
+  // playable stops at length - 0.0001 (character.js animatorUpdate), so a motion does not wrap there.
+  // ENGINE: Mecanim's sampling of a clip past its length (m_LoopTime) is native; wrapped or clamped here.
   localTime(t) { return (this.loopTime && t > this.length) ? t % this.length : Math.min(t, this.length); }
 
   // values: the parameter values; fields: the object whose eyeOpening / mouthOpening / renderOpacity the model curves set
