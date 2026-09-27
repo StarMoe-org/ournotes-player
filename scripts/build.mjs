@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds the browser bundles into dist/ (esbuild, target es2022, linked source maps with the sources inlined):
+// Builds the browser bundles into dist/ (esbuild, target es2022, linked source maps naming the files in src/):
 //   ournotes-player.js / .min.js                   ESM of src/index.js (the API; defines nothing)
 //   ournotes-player.element.js / .min.js           ESM of src/element.js (the API; defines <ournotes-player>)
 //   ournotes-player.global.js / .min.js            IIFE of src/element.js: defines <ournotes-player> and exposes the
@@ -57,7 +57,7 @@ async function build(outdir) {
         target: "es2022",
         minify,
         sourcemap: "linked",
-        sourcesContent: true,              // the maps carry their sources: a bundle and its map work anywhere
+        sourcesContent: false,             // the maps name the files in src/ (shipped next to dist/), not their text
         charset: "utf8",
         legalComments: "none",
         banner: { js: banner },
