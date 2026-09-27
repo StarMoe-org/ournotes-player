@@ -3,7 +3,7 @@
 // indicator, video buttons, rule transition and letterbox bands, and a synthetic font asset: state after Refresh,
 // talk window fade, typewriter frames per language and speed, cancel, speaker plate layout, title / location timing,
 // ruby rewrite and ruby margin, flash fade, subtitles, video buttons, the talk window's optional parts, rule fade,
-// letterbox bands and fade, text checks, the StoryUI contract. No GL.
+// letterbox bands and fade, the hidden backlog and choice views, text checks, the StoryUI contract. No GL.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { F } from "../../src/engine/core.js";
@@ -60,6 +60,39 @@ const withCenter = (doc) => {
   doc.blur = { renderer: "R", active: true, iterations: 3, offset: 1, downsample: 1, blendRateMax: F(0.3), shader: "Hidden/UI/DualKawaseBlur" };
   return doc;
 };
+// the backlog (TalkLogView: its own canvas, CanvasGroup at alpha 1, the overlay and the close button) and the choices
+// (ChoiceView/Choices with two items, each with its AdvChoiceItem and the CanvasGroup of its Root), all active as in
+// the prefab
+const TL = `${F0}/TalkLogView`, CV = `${C}/ChoiceView`;
+const choiceItem = (i) => {
+  const it = `${CV}/Choices/Item${i}`;
+  return [
+    node(it, { aMin: [0, 1], aMax: [1, 1], size: [0, 120], behaviours: { AdvChoiceItem: [{ m_Enabled: 1, _text: null, _button: `${it}/Root`,
+                                                                                            _canvasGroup: `${it}/Root`, _inAnimation: null,
+                                                                                            _outAnimation: null }] } }),
+    node(`${it}/Root`, { canvasGroup: group(), image: image() }),
+  ];
+};
+const withViews = (doc) => {
+  const i = doc.nodes.findIndex((n) => n.path === L);
+  doc.nodes.splice(i, 0,
+    node(TL, { canvas: { m_Enabled: 1, m_RenderMode: 2, m_SortingOrder: 305, m_OverrideSorting: true, m_PixelPerfect: false },
+               canvasGroup: group(),
+               talkLogView: { enabled: 1, _canvasGroup: TL, _canvas: TL, _scroller: `${TL}/ScrollView`, _entryViewOrigin: null,
+                              _closeButton: `${TL}/CloseButton`, _fadeDuration: F(0.15) } }),
+    node(`${TL}/UIOverlay`, { image: { ...image(), m_Color: { r: 0, g: 0, b: 0, a: F(0.698) } } }),
+    node(`${TL}/ScrollView`, { aMin: [0.5, 0], aMax: [0.5, 1], size: [1600, 0] }),
+    node(`${TL}/ScrollView/Bar`, { aMin: [1, 0], aMax: [1, 1], size: [4, 0], image: image() }),
+    node(`${TL}/CloseButton`, { aMin: [1, 1], aMax: [1, 1], pos: [-80, -80], size: [120, 120], image: image() }),
+    node(CV, { choiceView: { enabled: 1, _choiceItems: [`${CV}/Choices/Item0`, `${CV}/Choices/Item1`], _choiceItemParent: `${CV}/Choices`,
+                             _canvasGroup: `${CV}/Choices`, _showIsAscendingOrder: 1, _hideIsAscendingOrder: 1,
+                             _animationIntervalIn: F(0.04), _animationIntervalOut: 0 } }),
+    node(`${CV}/Choices`, { aMin: [0.5, 0.5], aMax: [0.5, 0.5], size: [700, 540], canvasGroup: group() }),
+    ...choiceItem(0), ...choiceItem(1));
+  return doc;
+};
+// names of the draw items with a vertex of alpha above 0 (UIDraw.pack: 16 floats per vertex, alpha at 6)
+const shown = (items) => items.filter((it) => it.verts.some((v, k) => k % 16 === 6 && v > 0)).map((it) => it.node.name);
 const uiDoc = () => ({
   nodes: [
     node("UIAdvWidget/VideoCanvas", { canvas: { m_Enabled: 1, m_RenderMode: 1, m_PixelPerfect: 0 } }),   // drawn by its feature
@@ -396,6 +429,58 @@ test("letterbox bands on a 16:9 screen and the 0.2 s fade", async () => {
   assert.equal(done, 7);
 });
 
+test("backlog and choices: hidden by Init and Refresh, nothing of them drawn", () => {
+  const { ui } = create({ doc: withViews(uiDoc()) });
+  const n = (p) => ui.nodes.get(p);
+  // AdvTalkLogView.Refresh: CanvasGroup alpha 0, the view stays active
+  assert.equal(n(TL).activeSelf, true);
+  assert.equal(n(TL).canvasGroup.alpha, 0);
+  // AdvChoiceView.Refresh: every item inactive with its CanvasGroup at alpha 0, the Choices CanvasGroup at alpha 0
+  for (const i of [0, 1]) {
+    assert.equal(n(`${CV}/Choices/Item${i}`).activeSelf, false);
+    assert.equal(n(`${CV}/Choices/Item${i}/Root`).canvasGroup.alpha, 0);
+  }
+  assert.equal(n(`${CV}/Choices`).canvasGroup.alpha, 0);
+  assert.equal(n(CV).activeSelf, true);
+  ui.layout(2340, 1080);
+  const items = ui.drawList(ui.front);
+  assert.deepEqual(items.map((it) => it.node.name).filter((m) => /^Item|^Root$/.test(m)), []);   // inactive items
+  assert.deepEqual(shown(items), []);                                     // the backlog at alpha 0, the talk hidden
+});
+
+test("backlog and choices: a view record naming a node without a CanvasGroup is refused", () => {
+  const doc = withViews(uiDoc());
+  delete doc.nodes.find((x) => x.path === `${CV}/Choices/Item1/Root`).canvasGroup;
+  assert.throws(() => create({ doc }), /AdvChoiceItem\._canvasGroup/);
+});
+
+test("letterbox: Refresh leaves the root inactive; bands updated at load fade in at the start", async () => {
+  const { ui, loop, step } = create();
+  assert.equal(ui.letterBox.activeSelf, false);                           // RefreshLetterBoxBands
+  assert.equal(ui.part.topBand.activeSelf, false); assert.equal(ui.part.bottomBand.activeSelf, false);
+  // a screen as wide as the viewport: no bands, the fade has nothing to do
+  const wide = create();
+  wide.ui.updateLetterBoxBands({ screenWidth: 2340, screenHeight: 1080, viewport: { x: 0, y: 0, w: 2340, h: 1080 } });
+  assert.equal(wide.ui.letterBox.activeSelf, false);
+  let wideDone = false;
+  wide.ui.fadeInLetterBox().then(() => { wideDone = true; });
+  await wide.step(1);
+  assert.equal(wideDone, true);
+  // 16:9: UpdateLetterBoxBands before any frame is drawn (UIAdvWidget.Init / SetLetterBoxSprite), then
+  // FadeInLetterBoxIfNeededAsync (StartPlayTask) fades the bands in
+  const sw = 1920, sh = 1080, vh = Math.round(sh * (sw / sh) / 2.1666667), vy = Math.round((sh - vh) / 2);
+  const screen = { screenWidth: sw, screenHeight: sh, viewport: { x: 0, y: vy, w: sw, h: vh } };
+  ui.updateLetterBoxBands(screen);
+  assert.equal(ui.letterBox.activeSelf, true); assert.equal(ui.letterBox.canvasGroup.alpha, 0);
+  const f0 = loop.frameCount;
+  let done = -1;
+  ui.fadeInLetterBox().then(() => { done = loop.frameCount - f0; });
+  await step(8);
+  assert.equal(done, 7);
+  ui.renderLetterBox({ gl: null, ...screen });                            // the same screen when drawn: unchanged
+  assert.equal(ui.letterBox.activeSelf, true); assert.equal(ui.letterBox.canvasGroup.alpha, 1);
+});
+
 test("checkTexts refuses what the UI cannot lay out", () => {
   const { ui } = create();
   ui.checkTexts(["AB", "<size=150%>一二</size>", "<color=#FFFFFF>A</color>", "<r=一二>三</r>"]);
@@ -539,8 +624,17 @@ test("subtitles: show, hidden text kept, restore, clear; the front next indicato
   assert.equal(ui.part.frontNextIndicator.activeSelf, false);
 });
 
+test("menu: the in-canvas menu is not drawn, with its video buttons shown or not", () => {
+  const { ui } = create();
+  assert.equal(ui.part.menu.activeSelf, false);
+  ui.showVideoButtons(true);
+  ui.layout(2400, 1080);
+  assert.deepEqual(ui.drawList(ui.front).filter((it) => it.node.path.includes("/MenuView")).map((it) => it.node.name), []);
+});
+
 test("video buttons: shown with or without skip, laid out, the black filter on the canvas edges", () => {
   const { ui } = create();
+  ui.setActive(ui.part.menu, true);                                       // not drawn by the player; laid out as the game does
   ui.showVideoButtons(false);
   assert.equal(ui.part.videoButtonParent.activeSelf, true);
   assert.equal(ui.part.skipVideoButton.activeSelf, false);

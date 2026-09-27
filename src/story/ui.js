@@ -14,13 +14,13 @@ import { DualKawaseBlur, UIBlur, blurPass } from "./simple/home/blur.js";
 // The story's front canvas (StoryUI): UIAdvWidget/FrontCanvas with the talk windows under UIContainer/TalkView (the
 // default UIDefaultTalkWindow; UICenterTalkWindow with its centre-talk backdrop and the UI blur (simple/home/blur.js)
 // when the episode uses it), the flash, rule transition cover, location caption, curtains, subtitles, front next
-// indicator, menu entry button and video buttons, episode title, plus the AdvLetterBoxCanvas bands, drawn with the
-// game's UI shaders. The other canvases of the widget (video, still, frame) belong to their features and are not
-// built here. Generic uGUI (RectTransform, Image, CanvasGroup, canvas drawing, UI clips and tweens) is engine/ugui.js,
-// TextMesh Pro layout engine/uitext.js; the auto layout (layout groups, content size fitters) is ui-layout.js, the
-// talk window ui-talk.js, the text components and the ruby rewrite ui-ruby.js, the rule transition and the letterbox
-// ui-transition.js. The UI's timing runs on the player loop with or without a GL context (gl = null: layout,
-// geometry and timing only).
+// indicator, menu entry button and video buttons, episode title, the backlog and choice views (hidden as Refresh leaves
+// them), plus the AdvLetterBoxCanvas bands, drawn with the game's UI shaders. The other canvases of the widget (video,
+// still, frame) belong to their features and are not built here. Generic uGUI (RectTransform, Image, CanvasGroup,
+// canvas drawing, UI clips and tweens) is engine/ugui.js, TextMesh Pro layout engine/uitext.js; the auto layout (layout
+// groups, content size fitters) is ui-layout.js, the talk window ui-talk.js, the text components and the ruby rewrite
+// ui-ruby.js, the rule transition and the letterbox ui-transition.js. The UI's timing runs on the player loop with or
+// without a GL context (gl = null: layout, geometry and timing only).
 //
 // Data: ui/ui.json (nodes, sprites, textures, UI materials, clips, controllers, transitions, player settings, the blur
 // pass settings with a backdrop-filter talk window), the language's ui/fonts.json (font assets, glyph pages, text
@@ -169,6 +169,25 @@ export class StoryUI {
     };
     for (const [k, p] of Object.entries(MENU_PARTS)) this.part[k] = opt(p);
     const p = this.part;
+    // the CanvasGroup a serialized reference names (a node with an enabled CanvasGroup)
+    const groupRef = (path, what) => {
+      const n = ref(path);
+      if (!n || !n.canvasGroup) throw new UIError(`${what}: ${path} has no CanvasGroup in the data`);
+      return n.canvasGroup;
+    };
+    // AdvTalkLogView._canvasGroup (the backlog, in the data with its view record)
+    const talkLogView = opt("TalkLogView"), tl = talkLogView && talkLogView.rec.talkLogView;
+    p.talkLog = tl ? { group: groupRef(tl._canvasGroup, "AdvTalkLogView._canvasGroup") } : null;
+    // AdvChoiceView._canvasGroup and _choiceItems: each item's GameObject and AdvChoiceItem._canvasGroup
+    const choiceView = opt("UISafeArea/UIContainer/ChoiceView"), cv = choiceView && choiceView.rec.choiceView;
+    p.choices = cv ? {
+      group: groupRef(cv._canvasGroup, "AdvChoiceView._canvasGroup"),
+      items: cv._choiceItems.map((path) => {
+        const n = ref(path), rec = n && n.rec.behaviours && n.rec.behaviours.AdvChoiceItem;
+        if (!rec || rec.length !== 1) throw new UIError(`AdvChoiceView._choiceItems: ${path} has no AdvChoiceItem in the data`);
+        return { node: n, group: groupRef(rec[0]._canvasGroup, "AdvChoiceItem._canvasGroup") };
+      }),
+    } : null;
     if (p.flash && !p.flash.image) throw new UIError("FlashView: no Image");
     if (p.subtitlesText && !p.subtitlesText.storyText) throw new UIError("SubtitlesText: no text component");
     if (p.centerTalkBackdrop && !(p.centerTalkBackdrop.canvasGroup && p.centerTalkBackdrop.image))
@@ -221,6 +240,10 @@ export class StoryUI {
       w.talk.init();
       this.setActive(w.node, false);
     }
+    // UIAdvWidget.Init: AdvTalkLogView.Init (the scroller's delegate, then its Refresh) and AdvChoiceView.Init (the body
+    // of its Refresh), then Refresh
+    if (p.talkLog) this._refreshTalkLog();
+    if (p.choices) this._refreshChoices();
     this._refresh();
     loop.on("update", (l) => this._onUpdated(l.deltaTime));
     loop.on("tweens", (l) => this.tweens.update(l.deltaTime));     // DOTweenComponent.Update
@@ -498,11 +521,10 @@ export class StoryUI {
     target.bind();
   }
 
-  // AdvLetterBoxCanvas (ScreenSpaceOverlay, no CanvasScaler: 1 unit = 1 screen pixel) onto the default framebuffer.
-  // UIAdvWidget.UpdateLetterBoxBands runs when the viewport or the screen size changes (AdvViewportChanged);
-  // viewport = {x, y, w, h} in pixels, GL bottom-left origin.
+  // AdvLetterBoxCanvas (ScreenSpaceOverlay, no CanvasScaler: 1 unit = 1 screen pixel) onto the default framebuffer,
+  // after updateLetterBoxBands for the drawn screen; viewport = {x, y, w, h} in pixels, GL bottom-left origin.
   renderLetterBox({ gl, screenWidth, screenHeight, viewport }) {
-    this.letterBoxView.update(screenWidth, screenHeight, viewport);
+    this.updateLetterBoxBands({ screenWidth, screenHeight, viewport });
     this._layoutRoot(this.letterBox, screenWidth, screenHeight);
     if (!this.gl || !this.letterBox.activeSelf) return;
     const globals = UIDraw.globals(screenWidth, screenHeight, screenWidth, screenHeight, 8);
@@ -510,9 +532,15 @@ export class StoryUI {
     for (const it of this.drawList(this.letterBox)) this._draw(it, globals);
   }
 
+  // UIAdvWidget.UpdateLetterBoxBands: at UIAdvWidget.Init and SetLetterBoxSprite (AdvPlayer.Init) with the screen at
+  // load, and on AdvViewportChanged / OnResolutionChanged when the viewport or the screen size changes
+  updateLetterBoxBands({ screenWidth, screenHeight, viewport }) {
+    this.letterBoxView.update(screenWidth, screenHeight, viewport);
+  }
+
   // ------------------------------------------------------------ initial state
-  // UIAdvWidget.Init -> Refresh, in its order, for the parts in the data. Parts not in the data (CenterTalkBackdrop
-  // alpha 0, NextButton and CancelFullScreenButton, the menu panel, choices, log) are invisible after Refresh.
+  // UIAdvWidget.Init -> Refresh, in its order, for the parts in the data (a part the data lacks is not drawn). The
+  // video, still and frame views and their steps of Refresh belong to their features.
   _refresh() {
     const p = this.part;
     if (p.flash) this._refreshFlash();               // AdvFlashView.Refresh
@@ -524,9 +552,29 @@ export class StoryUI {
     // AdvFrontScreenView.Refresh: _nextIndicator inactive, CancelFullScreenButton hidden, _uiContainer active
     if (p.frontNextIndicator) this.setActive(p.frontNextIndicator, false);
     this.setActive(p.uiContainer, true);
+    if (p.talkLog) this._refreshTalkLog();           // AdvTalkLogView.Refresh
+    if (p.choices) this._refreshChoices();           // AdvChoiceView.Refresh
     this.rule.refresh();                             // UIRuleTransitionView.Refresh
     this.letterBoxView.refresh();                    // RefreshLetterBoxBands
     this._resetBlurAndBackdrop();                    // ResetAdvBlurAndBackdrop
+  }
+
+  // AdvTalkLogView.Refresh: not visible, entries and cell heights cleared, ReloadScroller(0) (no cells), DOKill on the
+  // CanvasGroup, alpha 0, not interactable, no raycasts. The view stays active; the backlog is not opened here.
+  _refreshTalkLog() {
+    this.part.talkLog.group.alpha = 0;
+  }
+
+  // AdvChoiceView.Refresh: SetChoicesActive(false) (per item: SetActiveFast(false), AdvChoiceItem.SetCanvasGroupVisible
+  // (false): its CanvasGroup alpha 0), then SetCanvasGroupVisible(false): the view's CanvasGroup alpha 0, not
+  // interactable, no raycasts
+  _refreshChoices() {
+    const c = this.part.choices;
+    for (const it of c.items) {
+      this.setActive(it.node, false);
+      it.group.alpha = 0;
+    }
+    c.group.alpha = 0;
   }
 
   // AdvMenuView.Refresh (parts in the data): MenuEntryButton / PauseVideoButton / SubtitlesButton ChangeNormalState,
@@ -541,6 +589,9 @@ export class StoryUI {
     if (p.menuButtonsParent) this.setActive(p.menuButtonsParent, false);
     if (p.videoButtonParent) this.setActive(p.videoButtonParent, false);
     if (p.menu && p.menu.canvasGroup) p.menu.canvasGroup.alpha = 1;
+    // The in-canvas menu (entry button, menu panel, video STOP / SKIP buttons) is not drawn: its buttons do nothing
+    // here. The host's controls (controls.js) stand in for it; the menu's state above is still kept.
+    if (p.menu) this.setActive(p.menu, false);
   }
 
   _need(part, what) {

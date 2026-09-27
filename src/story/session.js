@@ -189,6 +189,13 @@ export class StorySession {
     }
     if (typeof ui.checkTexts === "function")
       ui.checkTexts(storyTexts(episode, P, scene.settings.masterIdSettings, localize, titleTextId));
+    // UIAdvWidget.Init and SetLetterBoxSprite (AdvPlayer.Init): UpdateLetterBoxBands for the screen at load (the
+    // drawing buffer size of the options, else the canvas size), before StartPlayTask fades the bands in
+    if (gl && typeof ui.updateLetterBoxBands === "function") {
+      const c = gl.canvas, w = Math.max(1, Math.round(opts.width || (c ? c.width : 300)));
+      const h = Math.max(1, Math.round(opts.height || (c ? c.height : 150)));
+      ui.updateLetterBoxBands({ screenWidth: w, screenHeight: h, viewport: advViewport(w, h) });
+    }
 
     // the sound manager with every cue of the episode ready; a story without its sound files (story.json `audio`
     // empty) plays no sound, with the voices off as in the game without voice data (Session.WithVoice false: the

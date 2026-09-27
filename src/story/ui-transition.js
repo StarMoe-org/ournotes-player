@@ -81,12 +81,13 @@ export class StoryLetterBox {
   }
 
   // RefreshLetterBoxBands: visible / initialized / fadeEnabled / fading cleared, the group (if any) at alpha 0, both
-  // bands inactive
+  // bands inactive, then the AdvLetterBoxCanvas root inactive
   refresh() {
     const p = this.ui.part;
     this.s = { visible: false, initialized: false, fadeEnabled: false, fading: false, from: 0, to: 0, elapsed: 0 };
     if (this.root.canvasGroup) this.root.canvasGroup.alpha = 0;
     this.ui.setActive(p.topBand, false); this.ui.setActive(p.bottomBand, false);
+    this.ui.setActive(this.root, false);
   }
 
   // UIAdvWidget.InitializeLetterBoxCanvasGroup: the CanvasGroup of AdvLetterBoxCanvas is added at run time
@@ -95,7 +96,8 @@ export class StoryLetterBox {
     if (!this.root.canvasGroup) this.root.canvasGroup = { alpha: 1, ignoreParentGroups: false };
   }
 
-  // AdvViewportChanged -> UpdateLetterBoxBands when the screen or the viewport changes
+  // UpdateLetterBoxBands (UIAdvWidget.Init, SetLetterBoxSprite, AdvViewportChanged / OnResolutionChanged); a call
+  // with the screen and viewport of the previous one changes nothing and is skipped
   update(screenW, screenH, viewport) {
     const key = `${screenW}x${screenH}:${viewport.x},${viewport.y},${viewport.w},${viewport.h}`;
     if (key === this._key) return;

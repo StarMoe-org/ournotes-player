@@ -206,8 +206,10 @@ story player in their host screen ([story-simple.md](story-simple.md)).
 - UIParticle effects on the still canvases: not drawn; see the exception above (the frame canvases draw them, and
   no still of the current stories has one).
 - Stage shadow textures: refused (see above).
-- The story menu's open state (`MenuButtonsParent`: its buttons and their language-dependent sprites): the menu stays
-  closed, as it is until the viewer opens it; the control bar above takes its place.
+- The story menu (`MenuView`: the menu button, its panel with the language-dependent sprites, and the video STOP /
+  SKIP buttons): not drawn and not tappable; the control bar above takes its place.
+- The backlog (`TalkLogView`) and the choices (`ChoiceView`): they stay hidden as the game's refresh leaves them (the
+  backlog at alpha 0, the choice items inactive). The backlog does not open; its entries are the `log` events.
 
 ### Engine behaviour
 
