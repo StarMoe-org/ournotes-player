@@ -100,12 +100,12 @@ export class AdvStageData {
   get hasParticleEffects() { return this.particleEffectGroupCollection._groups.some((g) => g._particleEffects.length > 0); }
 
   // AdvStage.Init -> AdvParticleEffectGroupCollection.Init: each group's effects built over the stage prefab and
-  // initialized (stopped, cleared, hidden). records: AnimRecords of the scene data file; opts.rng: UnityEngine.Random.
-  initParticleGroups(ctx, records, opts = {}) {
+  // initialized (stopped, cleared, hidden). records: AnimRecords of the scene data file.
+  initParticleGroups(ctx, records) {
     this.loop = ctx.loop;
     if (!this.hasParticleEffects) return;
     this.particleGroups = createStageParticleGroups(ctx, this.name, this.prefab, this.particleEffectGroupCollection,
-                                                    records, opts);
+                                                    records);
     this._releaseGroups = () => releaseStageParticleGroups(ctx, this.particleGroups);
   }
 

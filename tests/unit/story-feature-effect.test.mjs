@@ -222,3 +222,25 @@ test("AdvParticleEffect: a field item's draw hands the field renderer's per-obje
   assert.equal(layer, 8);
   assert.deepEqual([M[0], M[5], M[14]].map((x) => Math.round(x * 1000) / 1000), [20, 15, 0.2]);
 });
+
+test("Effect: the command effects and the stage groups draw from a stream of their own, not the scripts' UnityEngine.Random", async () => {
+  const t = makePlayer(), random = new UnityRandom(3);
+  await installStoryFeatures(t.ctx, t.p, { random });
+  const before = [random.x, random.y, random.z, random.w];
+  const e = storyEffects(t.ctx).get("star");
+  await run(t, { PositionType: 5 });
+  await steps(t.loop, 10);
+  const dust = e.entries.get("a/Root/Dust").system;
+  assert.ok(dust.particles.length > 0);
+  const comp = { type: "MonoBehaviour", class: "AdvParticleEffect", _particleSystem: { component: "ParticleSystem", gameObject: "st/Rain" } };
+  const stage = new Prefab({ key: "st", nodes: [node("st", []), node("st/Rain", [ps({ rate: 30 }), psr(0), comp])] });
+  const [[rain]] = createStageParticleGroups(t.ctx, "st", stage, { _groups: [{ _particleEffects: [{ ...comp, gameObject: "st/Rain" }] }] },
+                                              new AnimRecords({}));
+  rain.play();
+  await steps(t.loop, 5);
+  assert.ok(rain.particleSystem.particles.length > 0);
+  assert.deepEqual([random.x, random.y, random.z, random.w], before);      // UnityEngine.Random untouched
+  assert.equal(rain.particleSystem.sharedRng, dust.sharedRng);            // one stream per story
+  assert.notEqual(dust.sharedRng, random);
+  disposeStoryFeatures(t.ctx);
+});

@@ -462,6 +462,7 @@ Every `ENGINE:` note in `src/`, by file. `npm test` checks that this list matche
 **`src/story/features/effect.js`**
 
 - activation is native; OnEnable / OnDisable run inside SetActive, parent first.
+- the particle systems draw their random numbers natively (a new seed per Play with autoRandomSeed, else their
 - a mesh without vertex colours reads colour (1, 1, 1, 1) (FxMaterial's constant white).
 - bool properties (GameObject.m_IsActive, ParticleSystem.looping) are written from their float curve as
 

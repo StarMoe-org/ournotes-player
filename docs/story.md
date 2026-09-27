@@ -176,7 +176,7 @@ row and the interpreter (`StoryPlayerCore`: `ctx` with the scene objects, the se
 | Viewport | The ADV camera's 13:6 viewport in the page's box, with the game's letterbox bands above and below on narrower boxes. |
 | Text | Laid out with the game's TextMeshPro rules and drawn with the TextMeshPro distance-field shader, with glyphs from the font assets of the data (open-source fonts in the published data: line breaks can differ from the game where the advances differ). |
 | Arithmetic | float32 where the game's managed code computes in float32. |
-| Randomness | UnityEngine.Random (eye blinks, pseudo lip sync, shakes) from a seeded stream (`seed`); the game seeds it from the clock. |
+| Randomness | UnityEngine.Random (eye blinks, pseudo lip sync, shakes) from a seeded stream (`seed`); the game seeds it from the clock. The particle systems draw from streams of their own with fixed seeds (the game seeds them natively). |
 | Sound files | A story published without them (manifest `audio` false) plays without sound, with the voices off as in the game without voice data: the lines advance by their length and the speakers' mouths follow the text. |
 
 ### Reproduced

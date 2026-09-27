@@ -3,6 +3,7 @@ import { F } from "../../engine/core.js";
 import { mat4, quat, Transform } from "../../engine/math.js";
 import { Prefab } from "../../engine/prefab.js";
 import { FxMaterials, FxParticleSystem, PS_STOP } from "../../engine/particles.js";
+import { UnityRandom } from "../../engine/random.js";
 import { FxSpriteRenderer } from "../../live/fx-effects.js";
 import { StoryCommandError } from "../interfaces.js";
 import { AnimRecords } from "./clips.js";
@@ -15,6 +16,13 @@ import { featureSlot, featureState } from "./state.js";
 // GameObject activity: activeSelf per node, activeInHierarchy propagated; a change reaches the particle systems
 // (FxParticleSystem.onActiveChanged) and the Animator.
 // ENGINE: activation is native; OnEnable / OnDisable run inside SetActive, parent first.
+// ENGINE: the particle systems draw their random numbers natively (a new seed per Play with autoRandomSeed, else their
+// randomSeed), not from UnityEngine.Random; AdvParticleEffect and its groups call no Random and set no seed. The
+// managed Random is the native scripting generator (GetScriptingRand), left to the scripts (Unity 2022.3 Random docs).
+// How an automatic seed is chosen is not known: the command effects and the stage groups here draw from one stream of
+// their own per story, with a fixed seed, so UnityEngine.Random (DOTween shakes, eye blinks) stays the scripts' alone.
+const EFFECT_PARTICLE_SEED = 0x41504546;
+const effectParticleRandom = (ctx) => featureSlot(ctx, "advParticleRandom", () => new UnityRandom(EFFECT_PARTICLE_SEED));
 
 export const LAYER = { UI: 5, Camera1: 6, AdvBack: 12, AdvFront: 13 };
 const CAMERA_LAYER = { 1: 6, 3: 7, 5: 8, 7: 9, 9: 10 };          // AdvPositionTypeExtensions.ToLayerName: Camera1..5
@@ -465,7 +473,6 @@ export class StoryEffects {
   // AdvEpisodeResourceLoader.LoadParticleEffect for every Effect row (one instance per TargetName; IgnoreData rows are
   // not preloaded), Init(token) with speed 1
   load(doc) {
-    const s = featureState(this.ctx);
     this.records = new AnimRecords(doc, StoryCommandError);
     for (const c of this.ctx.episode.commands) {
       if (c.cmd !== "Effect" || c.IgnoreData || !(c.TargetName ?? "") || this.byName.has(c.TargetName)) continue;
@@ -473,8 +480,8 @@ export class StoryEffects {
       if (!asset) continue;
       const ex = doc.effects[asset];
       if (!ex) throw new StoryCommandError(`effect ${asset} is not in the story data`);
-      const e = new AdvParticleEffect(c.TargetName, ex, { materials: this.materials, rng: s.random, parent: this.resourceParent,
-                                                          records: this.records });
+      const e = new AdvParticleEffect(c.TargetName, ex, { materials: this.materials, rng: effectParticleRandom(this.ctx),
+                                                          parent: this.resourceParent, records: this.records });
       e.init(1);
       this.byName.set(c.TargetName, e);
       this.list.push(e);
@@ -529,19 +536,20 @@ export const loadEffects = (ctx) => {
 
 // AdvStage particle groups (AdvParticleEffectGroupCollection._groups[i]._particleEffects): one AdvParticleEffect per
 // referenced component over the stage prefab's subtree, Init(token) at stage load (stopped, cleared, hidden), then
-// updated and drawn with the command effects. prefab: the stage's engine/prefab.js Prefab; records: AnimRecords of the
-// scene data file. Returns the groups (arrays of effects): AdvStage.PlayParticleEffects(i) = each play(),
-// StopParticleEffects(i) = each stop(false, ctx.loop), SetPlaybackSpeed(r) = each setPlaybackSpeed(r) over all groups.
-export const createStageParticleGroups = (ctx, stageName, prefab, collection, records, { rng = null } = {}) => {
-  const fx = storyEffects(ctx), s = featureState(ctx);
+// updated and drawn with the command effects (their random stream). prefab: the stage's engine/prefab.js Prefab;
+// records: AnimRecords of the scene data file. Returns the groups (arrays of effects): AdvStage.PlayParticleEffects(i) =
+// each play(), StopParticleEffects(i) = each stop(false, ctx.loop), SetPlaybackSpeed(r) = each setPlaybackSpeed(r) over
+// all groups.
+export const createStageParticleGroups = (ctx, stageName, prefab, collection, records) => {
+  const fx = storyEffects(ctx), rng = effectParticleRandom(ctx);
   const byPath = new Map();                     // a component referenced by several groups is one effect
   const groups = collection._groups.map((g, gi) => g._particleEffects.map((ref, k) => {
     if (!ref || ref.class !== "AdvParticleEffect" || typeof ref.gameObject !== "string")
       throw new StoryCommandError(`stage ${stageName}: particle group ${gi} entry ${k} is not an AdvParticleEffect`);
     let e = byPath.get(ref.gameObject);
     if (!e) {
-      e = new AdvParticleEffect(`${stageName}:${ref.gameObject}`, null, { materials: fx.materials, rng: rng || s.random,
-                                                                          records, prefab, rootPath: ref.gameObject });
+      e = new AdvParticleEffect(`${stageName}:${ref.gameObject}`, null, { materials: fx.materials, rng, records, prefab,
+                                                                          rootPath: ref.gameObject });
       byPath.set(ref.gameObject, e);
     }
     return e;

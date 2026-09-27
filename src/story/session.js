@@ -243,7 +243,7 @@ export class StorySession {
     // AdvStage.Init: the stages' particle groups (before the features load, so that their materials load too)
     const stages = [...sc.stageData.values()];
     const records = stages.some((st) => st.hasParticleEffects) ? new AnimRecords(scene, StoryCommandError) : null;
-    for (const st of stages) st.initParticleGroups(ctx, records, { rng: random });
+    for (const st of stages) st.initParticleGroups(ctx, records);
     await installStoryFeatures(ctx, core, { random });                   // the feature modules' per-episode setup
     loop.on("render", () => this._renderHook());
 
