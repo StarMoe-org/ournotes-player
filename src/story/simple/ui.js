@@ -252,10 +252,11 @@ export class SimpleUIDoc {
              verts: UIDraw.pack(mesh.verts, n, alpha), idx: Uint32Array.from(mesh.idx) };
   }
 
+  // the TextMeshProUGUI meshes (TMPText.meshes), each with its own kind (text, sprite) and material (the text
+  // material, a fallback font asset's "<text material> + <asset>", the sprite asset's)
   textItems(n, alpha) {
-    const t = n.text;
-    return t.meshes().map((m) => ({ doc: this, node: n, kind: "text", material: t.materialName, texture: this.tex ? this.tex[m.texture] : null,
-                                    verts: UIDraw.pack(m.verts, n, alpha, true), idx: Uint32Array.from(m.idx) }));
+    return n.text.meshes().map((m) => ({ doc: this, node: n, kind: m.kind, material: m.material, texture: this.tex ? this.tex[m.texture] : null,
+                                         verts: UIDraw.pack(m.verts, n, alpha, true), idx: Uint32Array.from(m.idx) }));
   }
 
   draw(it, globals) {

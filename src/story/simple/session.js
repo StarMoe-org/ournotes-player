@@ -346,10 +346,15 @@ export class SimpleStorySession {
         problems.add(e.message);
       }
       for (const p of tmpUnsupported(shown, { richText: talk.richText, parseCtrl: talk.parseCtrl })) problems.add(p);
+      // the character lookup of the text (TMPText.glyphOf: the font asset with its fallbacks, the sprite asset, the
+      // missing glyph)
       for (const ch of removeTagsWithRuby(s)) {
         const u = ch.codePointAt(0);
-        if (!talk.font.characters[String(u)] && u !== 10 && u !== 13 && u !== 9 && u !== 0x200B)
+        if (u === 10 || u === 13 || u === 9 || u === 0x200B) continue;
+        try { talk.glyphOf(u); } catch (e) {
+          if (!(e instanceof UIError)) throw e;
           problems.add(`${talk.font.name}: U+${u.toString(16).toUpperCase().padStart(4, "0")} not in the font data`);
+        }
       }
     }
     if (problems.size) throw new StoryCommandError(`${what}: texts the simple talk window cannot lay out: ${[...problems].join("; ")}`);

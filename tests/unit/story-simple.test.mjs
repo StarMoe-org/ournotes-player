@@ -7,6 +7,7 @@ import { LAYOUT_DEFAULT, SIMPLE_RT_SIZE, SLOT_LAYOUT, STAGE_X } from "../../src/
 import { SIMPLE_CLASS, SIMPLE_PHASE, classifyRow, runnerRows, supportedRowProblem, validateSimpleEpisode } from "../../src/story/simple/validator.js";
 import { SimpleAdvView, SimpleTalkWindow, aspectFit, aspectScaleBoost, layoutProfile, resolveSlots, talkWindowScale } from "../../src/story/simple/view.js";
 import { SimpleCanvas, SimpleUIDoc, runtimeNodeRecord } from "../../src/story/simple/ui.js";
+import { SimpleStorySession } from "../../src/story/simple/session.js";
 import { CameraTargetRenderer, cameraTargetDesc } from "../../src/story/simple/render.js";
 
 const F = Math.fround;
@@ -332,4 +333,23 @@ test("simple talk window: text components over the font data, no background, rub
   assert.equal(tt.text.margin.y, 0);
   win.talk.hideTalk(0);
   assert.equal(win.part.talkArea.activeSelf, false);
+});
+
+test("simple talk window: a fallback font's characters are drawn with their fallback material and pass the text check", () => {
+  const loop = new PlayerLoop(30);
+  const fb = fontAsset();                                               // the fallback: U+2605 only, on its own page
+  fb.characters = { 9733: { glyph: 1, scale: 1, elementType: 1 } };
+  fb.glyphs = { 1: { ...fb.glyphs[1], packed: { texture: "page1", dx: 0, dy: 0 } } };
+  const fonts = simpleFonts();
+  fonts.fonts = { "Test SDF": { ...fontAsset(), fallbacks: ["Fb SDF"] }, "Fb SDF": fb };
+  fonts.textures.page1 = { texture: "fonts/page1.png", width: 1024, height: 1024, mipCount: 1 };
+  fonts.materials["Test - Simple + Fb SDF"] = { ...fonts.materials["Test - Simple"], material: "Test - Simple + Fb SDF" };
+  const doc = new SimpleUIDoc(null, loop, simpleWindowDoc(), { assets: null, dir: "ui/simple", fonts, language: { language: "ja", mode: 2 } });
+  const tt = doc.node(TT);
+  tt.rect = { x: 0, y: -200, w: 1000, h: 200 }; tt.matrix = [1, 0, 0, 1, 0, 0];
+  tt.text.setText("A\u2605");
+  assert.deepEqual(doc.textItems(tt, 1).map((it) => [it.kind, it.material]), [["text", "Test - Simple"], ["text", "Test - Simple + Fb SDF"]]);
+  const check = (texts) => SimpleStorySession.prototype._checkTexts.call({ ui: doc }, texts, "t");
+  check(["A\u2605"]);                                                   // found through the fallback
+  assert.throws(() => check(["A\u00e9"]), /texts the simple talk window cannot lay out: Test SDF: U\+00E9 not in the font data/);
 });
