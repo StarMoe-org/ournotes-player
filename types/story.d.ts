@@ -358,7 +358,7 @@ export class SimpleStorySession {
   readonly lang: StoryLanguage;
   /** The host screen of host/host.json; "none": the talk alone on black. */
   readonly hostKind: "home" | "afterlive" | "none";
-  /** What the session does not draw for this episode ("Spine runtime missing", "spot Volume post-processing"). */
+  /** What the session does not draw for this episode ("Spine runtime missing", the home spot's missing tap target). */
   readonly missing: string[];
   readonly seed: number;
   readonly time: number;

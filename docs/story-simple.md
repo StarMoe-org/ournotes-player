@@ -35,7 +35,7 @@ full story player. `src/story/simple/` reproduces that presentation. `StorySessi
 
 | Host | Screen | Reproduced | Not reproduced (runtime data) |
 |---|---|---|---|
-| `home` | the home spot | the 3D spot (cardboard room with the game's shaders, Spine characters holding the end of their entrance animation), the camera's default pose, for a tap talk the 0.5 s move toward the tapped character and back, the 0.2 s blur of the scene, for an area talk the title message, the spot widget's darkening layer | the home header and menu buttons (player data), the home BGM and ambient sound, the spot's post-processing volume, the letterbox bands beyond 13:6 |
+| `home` | the home spot | the 3D spot (cardboard room with the game's shaders, Spine characters holding the end of their entrance animation), the camera's default pose, the main camera's post-processing with the spot's volume, for a tap talk the 0.5 s move toward the tapped character and back, the 0.2 s blur of the scene, for an area talk the title message, the spot widget's darkening layer | the home header and menu buttons (player data), the home BGM and ambient sound, the letterbox bands beyond 13:6 |
 | `afterlive` | the live result screen's reward phase | the fixed result background, the reward panel's talk area and its layout | the music, score, rank, reward items, navigation and member card of the played live |
 
 Without host data the talk plays alone on black with the default layout.
@@ -52,6 +52,15 @@ scene's render settings (a white flat ambient) and a black default reflection. A
 starts, a spot whose lighting the host does not reproduce (a light, fog, lightmaps, another ambient or reflection,
 shadows); a headless session plays it.
 
+The spot is drawn by the game's main camera with the Spot scene camera's projection, clear colour and clip planes, in
+HDR, with post-processing on and its volume mask on the HomeView layer. Its volume stack is the default profile
+blended with the spot's global volumes on that layer, by priority and weight; the spot backgrounds of the current data
+carry one, with bloom and split toning at weight 0.05. The main camera's post chain (colour grading LUT, bloom, uber
+pass) runs on the spot alone; the talk's blur and the UI are drawn after it. The film grain option applies as in other
+stories; the spot volumes of the current data have no film grain. A session that draws refuses a spot volume the chain
+does not draw (a local volume, depth of field, motion blur, a component or texture parameter it does not know) and a
+main camera with antialiasing or dithering.
+
 ## Data
 
 Besides the story files of `docs/story-data-format.md`:
@@ -61,9 +70,9 @@ Besides the story files of `docs/story-data-format.md`:
   `host/ui/ui.json`), the sequences the host screen has played when a talk can start (`openedSequences`: the talk
   starts with their Animator states at their end), and per host its scene data (`home`: the spot export, the room
   glTF with the background root's transform, per-node visibility after the situation, materials, Spine materials and
-  sorting, shaders, blur parameters, ambient sound, the spot scene's render settings and the lights of the scene and
-  the placed prefabs; `afterlive`: the background node and sprite, the reward panel, the list of runtime parts not
-  drawn).
+  sorting, shaders, blur parameters, ambient sound, the spot scene's camera and render settings, the lights of the
+  scene and the placed prefabs, and the volumes of the scene and the background; `afterlive`: the background node and
+  sprite, the reward panel, the list of runtime parts not drawn).
 - `ui/simple/ui.json`, `ui/simple/fonts.json` (per language): the talk window (and, for area talks, the system message
   widget and its title text) in the story UI record format, with the fonts of its texts.
 - Animator clips of the host UI key their curves by the path below the Animator (`"<path>:<Class>.<property>"`);
@@ -82,5 +91,5 @@ Besides the story files of `docs/story-data-format.md`:
   runtime the spot renders without its Spine characters, the talk still plays, and the session lists
   `"Spine runtime missing"` in `missing`.
 
-`missing` lists what the session does not draw for this episode: `"Spine runtime missing"`,
-`"spot Volume post-processing"` when the spot has a post-processing volume, and the tap target entry above.
+`missing` lists what the session does not draw for this episode: `"Spine runtime missing"` and the tap target entry
+above.

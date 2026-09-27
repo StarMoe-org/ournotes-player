@@ -21,6 +21,7 @@ import { removeTagsWithRuby } from "../ui-talk.js";
 import { SilentAudio } from "../silent-audio.js";
 import { SIMPLE_ADVANCE, SIMPLE_COMPLETE } from "./define.js";
 import { SimpleHomeHost } from "./home/host.js";
+import { spotMainCamera } from "./home/post.js";
 import { SIMPLE_OWN_COMMANDS, SIMPLE_SHARED_COMMANDS, SimpleAdvPlayer } from "./player.js";
 import { CameraTargetRenderer, SimpleCaptureRenderer, cameraTargetDesc } from "./render.js";
 import { SimpleCanvas, SimpleUIDoc, runtimeNodeRecord, setActive } from "./ui.js";
@@ -32,8 +33,9 @@ import { SimpleAdvView, SimpleTalkWindow } from "./view.js";
 // story element and page code drive either.
 //
 // Hosts (host/host.json of the story, written for Overlay episodes):
-//   home       the home spot scene (SpotManager): the 3D spot with its Spine characters (home/host.js), a tap talk
-//              blurs it over 0.2 s while the camera moves 0.5 s to the tapped character and returns after the talk;
+//   home       the home spot scene (SpotManager): the 3D spot with its Spine characters and the main camera's post
+//              processing (home/host.js, home/post.js); a tap talk blurs it over 0.2 s while the camera moves 0.5 s
+//              to the tapped character and returns after the talk;
 //              an area talk blurs and shows the episode title as a system message first. Manual advance (a tap
 //              advances), everything cleaned up at the end (SimpleAdvCompleteBehavior.CleanupAll).
 //   afterlive  the live result screen's reward phase (LiveResultDisplayPresenter): the fixed background and the reward
@@ -153,8 +155,8 @@ export class SimpleStorySession {
     const manager = new Transform("AdvManager");
     const pool = new Transform("Pool", manager);
     const characters = this.characters = new StoryCharacters();
-    const renderer = this.renderer = gl ? new SimpleCaptureRenderer(gl, new ShaderLib(gl, "shaders", store), scene.resources, loop,
-                                                                    { assets: store }) : null;
+    const storyLib = gl ? new ShaderLib(gl, "shaders", store) : null;     // the story's shaders (characters, URP post)
+    const renderer = this.renderer = gl ? new SimpleCaptureRenderer(gl, storyLib, scene.resources, loop, { assets: store }) : null;
     for (const c of episode.commands) {
       if (c.cmd !== "Character" || c.IgnoreData) continue;
       if (characters.has(c.TargetName, c.TargetAssetIndex || 0)) continue;
@@ -187,17 +189,18 @@ export class SimpleStorySession {
         : new SilentAudio(resolve, loop, { assets: store, sounds: hasSounds });
     await audio.preload(Object.keys(episode.sounds).map(Number));
 
-    // the home spot scene
+    // the home spot scene: the main camera with the Spot scene camera's info (post.js spotMainCamera) and its post chain
     if (this.hostKind === "home") {
       const camNode = scene.cameraManager.nodes.find((n) => n.path === "CameraManager/MainCamera");
       const cam = camNode ? camNode.components.find((c) => c.type === "Camera") : null;
       if (!cam) throw new Error(`${what}: scene.json has no CameraManager/MainCamera camera`);
-      const bg = cam.m_BackGroundColor, data = camNode.components.find((c) => c.class === "UniversalAdditionalCameraData");
+      const data = camNode.components.find((c) => c.class === "UniversalAdditionalCameraData");
+      const root = host.home.sceneRoot || {};
       this.home = await SimpleHomeHost.create(gl, store, loop, host,
-        { camera: { near: cam["near clip plane"], far: cam["far clip plane"], clearFlags: cam.m_ClearFlags,
-                    clearColor: [bg.r, bg.g, bg.b, bg.a], orthographicSize: cam["orthographic size"],
-                    rendererIndex: data ? data.m_RendererIndex : -1 },
-          graphics: scene.player, quality: quality.level, spine: opts.spine });
+        { camera: spotMainCamera(cam, data, root.sceneCamera || null),
+          graphics: scene.player, quality: quality.level, spine: opts.spine,
+          post: { lib: storyLib, textures: scene.postTextures, filmGrain: opts.filmGrain ?? 0,
+                  screenScale: (w) => quality.screenScale(w) } });
       this.missing.push(...this.home.missing);
     }
     if (renderer) await renderer.load();
@@ -488,7 +491,10 @@ export class SimpleStorySession {
     if (c && (c.width !== w || c.height !== h)) { c.width = w; c.height = h; }
     if (!this.screen || this.screen.width !== w || this.screen.height !== h) {
       if (this.screen) this.screen.release();
-      this.screen = new GLTarget(gl, w, h, { label: "SimpleScreen" });
+      // the camera stack's colour target: the home spot's main camera is HDR (its post chain writes RGBA16F, the UI
+      // camera draws on it); the other hosts' canvases draw into RGBA8
+      const hdr = this.home && this.home.hdr ? { internal: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT } : {};
+      this.screen = new GLTarget(gl, w, h, { ...hdr, label: "SimpleScreen" });
     }
     this.renderer.render(this.view.slots.map((s) => ({ crt: this.cameraTargets[s.index], character: s.character })));
     for (const s of this.view.slots) s.image.rawImage.texture = this.cameraTargets[s.index].target;
@@ -497,7 +503,7 @@ export class SimpleStorySession {
     gl.disable(gl.SCISSOR_TEST); gl.colorMask(true, true, true, true);
     gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
     if (this.home) {
-      this.home.renderScene(screen, w, h);
+      this.home.render(screen, w, h);                                  // the main camera: the spot and its post chain
       this.home.applyBlur(screen, w, h);                               // the home header / menu (blurred) are not drawn
       screen.bind();
     }

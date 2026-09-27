@@ -1,17 +1,21 @@
 // Home host of the simple ADV player (src/story/simple/home): the room glb read back into Unity space, the spot
 // camera's default pose / focus / return on a PlayerLoop, the UI blur ramp and Dual Kawase settings, the room's
-// visibility and URP draw order, URP's lighting state for the Lit materials, a headless host (gl = null) and a drawn
-// one on the headless context. Synthetic inputs only.
+// visibility and URP draw order, URP's lighting state for the Lit materials, the main camera in the spot and its volume
+// stack and post chain, a headless host (gl = null) and a drawn one on the headless context. Synthetic inputs only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AssetStore } from "../../src/data/assets.js";
+import { AssetStore, bindAssets } from "../../src/data/assets.js";
 import { PlayerLoop } from "../../src/engine/loop.js";
 import { EASE, easeF } from "../../src/engine/tween.js";
 import { blurLevels, blurPass, blurSettings, UIBlur } from "../../src/story/simple/home/blur.js";
 import { forwardOf, lookRotation, rotateVector, slerp, SpotCamera, spotFieldOfView } from "../../src/story/simple/home/camera.js";
 import { parseGlb, roomMeshes } from "../../src/story/simple/home/glb.js";
-import { backgroundMatrix, inverseTRS, NO_TAP_TARGET, roomInverse, roomMatrix, SimpleHomeHost, SPINE_MISSING, spotLighting,
-         VOLUME_MISSING } from "../../src/story/simple/home/host.js";
+import { backgroundMatrix, inverseTRS, NO_TAP_TARGET, roomInverse, roomMatrix, SimpleHomeHost, SPINE_MISSING,
+         spotLighting } from "../../src/story/simple/home/host.js";
+import { checkSpotCamera, checkSpotStack, HOME_VIEW_MASK, spotMainCamera, spotVolumeStack,
+         spotVolumes } from "../../src/story/simple/home/post.js";
+import { URPPost, VOLUME_DEFAULTS } from "../../src/engine/postfx.js";
+import { GLTarget } from "../../src/engine/texture.js";
 import { headlessGL } from "../../scripts/lib/headless.mjs";
 import { mat4 } from "../../src/engine/math.js";
 import { majorMinor, skeletonDataVersion, spineRuntime, spineRuntimeVersion } from "../../src/story/simple/home/spine.js";
@@ -322,7 +326,7 @@ test("background root: localPosition, world eulerAngles and localScale under obj
 });
 
 // -------------------------------------------------------------------------------------------------------------- host
-test("host: headless create, 'Spine runtime missing' without a runtime or with one of another version, the Volume entry", async () => {
+test("host: headless create, 'Spine runtime missing' without a runtime or with one of another version", async () => {
   const spine = {
     spineCharacters: [{ path: "s/A", skeletonData: "A_SkeletonData", animation: { _animationName: "home_start", loop: 0, timeScale: 1,
       initialSkinName: "", initialFlipX: 0, initialFlipY: 0, pmaVertexColors: 1, tintBlack: 0, zSpacing: 0 }, world: translation(0, 0, 5) }],
@@ -349,9 +353,11 @@ test("host: headless create, 'Spine runtime missing' without a runtime or with o
   assert.deepEqual(h2.missing, [SPINE_MISSING]);
   assert.match(h2.spineReason, /4\.1 cannot read skeleton data 4\.2\.43/);
   h2.dispose();
-  const { store: s3, host: h3doc } = makeStore({ home: { volume: { isGlobal: 1, weight: 0.05, components: [] } } });
+  // the spot's volume is drawn by the post chain: nothing listed (no Spine characters in this spot)
+  const { store: s3, host: h3doc } = makeStore({ home: { volume: { path: "bg", active: true, enabled: true, isGlobal: true,
+    weight: 0.05, priority: 0, blendDistance: 0, layer: 15, profile: "p", components: [] } } });
   const h3 = await SimpleHomeHost.create(null, s3, loop, h3doc, { camera: CAM, spine: null });
-  assert.deepEqual(h3.missing, [VOLUME_MISSING]);                                     // no Spine characters in this spot
+  assert.deepEqual(h3.missing, []);
   h3.dispose();
   assert.throws(() => new SimpleHomeHost(null, store, loop, { kind: "afterlive" }, { camera: CAM }), /not a home host/);
 });
@@ -363,7 +369,7 @@ const RENDER_SETTINGS = { m_Fog: 0, m_AmbientMode: 3, m_AmbientSkyColor: WHITE, 
 const pipeline = (extra = {}) => ({ m_ShEvalMode: 0, m_MainLightRenderingMode: 1, m_MainLightShadowsSupported: 0,
                                     m_AdditionalLightsRenderingMode: 0, m_AdditionalLightShadowsSupported: 0,
                                     m_ReflectionProbeBlending: 0, m_ReflectionProbeBoxProjection: 0, m_SupportsLightLayers: 0,
-                                    m_RendererDataList: ["Runtime", "Editor"], m_DefaultRendererIndex: 1, ...extra });
+                                    m_RendererDataList: ["Runtime", "Editor"], m_DefaultRendererIndex: 1, m_SupportsHDR: 1, ...extra });
 const GRAPHICS = {
   defaultPipeline: "Best",
   qualityLevels: [{ name: "Middle", customRenderPipeline: "Middle" }, { name: "Best", customRenderPipeline: "Best" }],
@@ -504,7 +510,7 @@ const litGL = () => {
   return { gl, calls, lit };
 };
 
-const litStore = (renderSettings = RENDER_SETTINGS) => {
+const litStore = (renderSettings = RENDER_SETTINGS, home = {}) => {
   const litMat = { name: "atlas_mat", shader: LIT, keywords: [], floats: { _Smoothness: 0, _Metallic: 0, _Surface: 0 },
                    colors: { _BaseColor: { r: 0.8, g: 0.8, b: 0.8, a: 1 } }, renderQueue: -1,
                    texEnvs: { _BaseMap: { texture: null, scale: [1, 1], offset: [0, 0] } } };
@@ -516,7 +522,7 @@ const litStore = (renderSettings = RENDER_SETTINGS) => {
     roomMaterials: mats, situation: { name: "s", matched: true },
     sceneRoot: { objRoot: null, lights: [], volumes: [], renderSettings }, lights: [], volume: null, spineMaterials: {},
     shaders: { index: "host/shaders/shaders.json", names: Object.keys(DRAWN_SHADERS) },
-    blur: { iterations: 3, offset: 1, downsample: 1, blendRateMax: 0.3 }, ambient: null } };
+    blur: { iterations: 3, offset: 1, downsample: 1, blendRateMax: 0.3 }, ambient: null, ...home } };
   const spotDoc = { spotId: 1, situationSettings: SETTINGS, characters: [], spineCharacters: [], skeletons: [] };
   const index = Object.entries(DRAWN_SHADERS).map(([name, [, vs]], i) => ({ name, parsed: `s${i}.json`,
     variants: vs.map(([pass, keywords], k) => ({ platform: "gles3", type: "GLES3", subShader: 0, pass, stage: "vertex", keywords,
@@ -532,11 +538,25 @@ const litStore = (renderSettings = RENDER_SETTINGS) => {
 };
 const DRAWN_CAM = { ...CAM, orthographicSize: 5, rendererIndex: 0 };
 
+// the story's URP post programs as recording stand-ins: blits = [{shader, pass, keywords, value(name)}]
+const POST_STATE = { src: 1, dst: 0, srcA: 1, dstA: 0, op: 0, opA: 0, colMask: 15, zTest: 8, zWrite: 0, cull: 0,
+                     offsetFactor: 0, offsetUnits: 0, stencilFront: [8, 0, 0, 0], stencilBack: [8, 0, 0, 0],
+                     stencilRef: 0, stencilRead: 255, stencilWrite: 255 };
+const postLib = () => {
+  const blits = [];
+  const lib = { program: (shader, pass, keywords) => ({ apply: (sheets) => {
+    const value = (n) => { for (const x of sheets) if (n in x) return x[n]; return undefined; };
+    blits.push({ shader: shader.split("/").pop(), pass, keywords: [...keywords].sort(), value });
+  } }), state: () => POST_STATE };
+  return { lib, blits };
+};
+
 test("host: a drawn Lit room gets URP's lighting keywords, normals, light constants and the black reflection cube", async () => {
   const { store, host } = litStore();
   const { gl, calls } = litGL();
   const loop = new PlayerLoop(30);
-  const h = await SimpleHomeHost.create(gl, store, loop, host, { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null });
+  const h = await SimpleHomeHost.create(gl, store, loop, host, { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null,
+                                                                  post: postLib() });
   const litPrograms = [...h.lib.cache.values()].filter((p) => p.label.startsWith(LIT));
   assert.deepEqual(litPrograms.map((p) => p.label), [`${LIT}#0.0[EVALUATE_SH_VERTEX _ADDITIONAL_LIGHTS_VERTEX]`]);
   const target = { glTexture: { kind: "Texture", id: -1 }, bind() {} };
@@ -557,7 +577,7 @@ test("host: a drawn Lit room gets URP's lighting keywords, normals, light consta
   // a lower quality level: no additional lights keyword
   const low = litStore();
   const h2 = await SimpleHomeHost.create(litGL().gl, low.store, new PlayerLoop(30), low.host,
-                                         { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 0, spine: null });
+                                         { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 0, spine: null, post: postLib() });
   assert.deepEqual([...h2.lib.cache.values()].filter((p) => p.label.startsWith(LIT)).map((p) => p.label), [`${LIT}#0.0[EVALUATE_SH_VERTEX]`]);
   h2.dispose();
 });
@@ -572,6 +592,184 @@ test("host: a drawn session checks the lighting before any GL call", async () =>
   await assert.rejects(h._upload(), /home spot 1: URP lighting needs the scene's render settings/);
   h.orthographicSize = undefined;
   await assert.rejects(h._upload(), /orthographic size/);
+  h.gl = null;
+  h.dispose();
+});
+
+// --------------------------------------------------------------------------------------- main camera and post
+const camRec = (over = {}) => ({ m_ClearFlags: 2, m_BackGroundColor: { r: 1, g: 1, b: 1, a: 1 }, "near clip plane": 0.3,
+  "far clip plane": 5000, "field of view": 60, orthographic: false, "orthographic size": 0, m_HDR: true,
+  m_NormalizedViewPortRect: { x: 0, y: 0, width: 1, height: 1 }, ...over });
+const camData = (over = {}) => ({ m_RendererIndex: 0, m_VolumeLayerMask: { m_Bits: 1 }, m_RenderPostProcessing: 1,
+                                  m_Antialiasing: 0, m_Dithering: 0, ...over });
+
+test("spotMainCamera: SetCameraInfo takes the scene camera's projection, clear and clip planes; HDR stays the main camera's", () => {
+  const scene = { path: "SceneRoot/SceneCamera", camera: camRec({ m_BackGroundColor: { r: 0, g: 0, b: 0, a: 0 }, "far clip plane": 1000,
+                                                                 "orthographic size": 170, m_HDR: false }) };
+  const c = spotMainCamera(camRec(), camData({ m_RendererIndex: 2 }), scene);
+  assert.deepEqual(c, { near: 0.3, far: 1000, clearFlags: 2, clearColor: [0, 0, 0, 0], orthographic: false, orthographicSize: 170,
+                        viewport: { x: 0, y: 0, width: 1, height: 1 }, rendererIndex: 0, hdr: true, antialiasing: 0,
+                        dithering: false, volumeMask: 1 << 15 });
+  assert.equal(HOME_VIEW_MASK, 32768);
+  // no scene camera: the main camera keeps its own values
+  assert.deepEqual(spotMainCamera(camRec(), camData(), null).clearColor, [1, 1, 1, 1]);
+  assert.equal(spotMainCamera(camRec(), camData(), null).far, 5000);
+  assert.equal(checkSpotCamera(c), c);
+  for (const [over, re] of [[{ orthographic: true }, /orthographic/], [{ viewport: { x: 0, y: 0, width: 0.5, height: 1 } }, /viewport/],
+                            [{ antialiasing: 1 }, /antialiasing mode 1/], [{ dithering: true }, /dithering/]])
+    assert.throws(() => checkSpotCamera({ ...c, ...over }, "home spot 7"), re);
+});
+
+const spotVol = (over = {}) => ({ path: "bg", active: true, enabled: true, isGlobal: true, weight: 0.05, priority: 0, blendDistance: 0,
+  layer: 15, profile: "p", components: [{ class: "Bloom", active: true, threshold: 0.5, intensity: 4 },
+    { class: "SplitToning", active: true, highlights: { r: 0.56, g: 0.57, b: 0.72, a: 1 }, balance: -20 }], ...over });
+
+test("spotVolumeStack: the defaults, then the HomeView volumes by priority, each at clamp01(weight) through its Interp", () => {
+  const t = F(0.05), lerp = (a, b) => F(F(a) + F(F(F(b) - F(a)) * t));
+  const s = spotVolumeStack({ sceneRoot: { volumes: [] }, volume: spotVol() });
+  assert.equal(s.Bloom.intensity, lerp(0, 4));
+  assert.equal(s.Bloom.threshold, lerp(0.9, 0.5));
+  assert.equal(s.Bloom.scatter, 0.7);                                             // not overridden
+  assert.deepEqual(s.SplitToning.highlights, { r: lerp(0.5, 0.56), g: lerp(0.5, 0.57), b: lerp(0.5, 0.72), a: 1 });
+  assert.equal(s.SplitToning.balance, lerp(0, -20));
+  assert.deepEqual(s.Vignette, VOLUME_DEFAULTS.Vignette);
+  // registration order: the Spot scene's volumes, then the background's
+  const scene = spotVol({ path: "scene", components: [{ class: "Bloom", active: true, intensity: 2 }], weight: 1 });
+  assert.deepEqual(spotVolumes({ sceneRoot: { volumes: [scene] }, volume: spotVol() }).map((v) => v.path), ["scene", "bg"]);
+  // not blended: another layer, inactive, disabled, no weight, no profile, an inactive component
+  const none = URPPost.evaluateStack([]);
+  for (const over of [{ layer: 11 }, { active: false }, { enabled: false }, { weight: 0 }, { profile: null },
+                      { components: [{ class: "Bloom", active: false, intensity: 4 }] }])
+    assert.deepEqual(spotVolumeStack({ volume: spotVol(over) }), none, JSON.stringify(over));
+  // a weight above 1 blends as 1
+  assert.equal(spotVolumeStack({ volume: spotVol({ weight: 3 }) }).Bloom.intensity, 4);
+  // priority: the higher one blends last, whatever the registration order; equal priorities keep it
+  const a = spotVol({ path: "a", priority: 2, weight: 1, components: [{ class: "Bloom", active: true, intensity: 1 }] });
+  const b = spotVol({ path: "b", priority: 1, weight: 1, components: [{ class: "Bloom", active: true, intensity: 3 }] });
+  assert.equal(spotVolumeStack({ sceneRoot: { volumes: [a] }, volume: b }).Bloom.intensity, 1);
+  assert.equal(spotVolumeStack({ sceneRoot: { volumes: [{ ...a, priority: 1 }] }, volume: b }).Bloom.intensity, 3);
+  // another camera mask
+  assert.deepEqual(spotVolumeStack({ volume: spotVol() }, 1 << 11), none);
+});
+
+test("spotVolumeStack and checkSpotStack refuse what the spot's chain does not draw", () => {
+  for (const [over, re] of [
+    [{ isGlobal: false, blendDistance: 2 }, /local Volume bg \(blend distance 2\) not implemented/],
+    [{ active: undefined }, /activeInHierarchy is not in the host data/],
+    [{ components: [{ class: "ScreenSpaceLensFlare", active: true, intensity: 1 }] }, /volume component ScreenSpaceLensFlare not implemented/],
+    [{ components: [{ class: "Bloom", active: true, sharpness: 1 }] }, /Bloom\.sharpness: unknown parameter/],
+    [{ components: [{ class: "Bloom", active: true, dirtTexture: { m_PathID: 5 } }] }, /Bloom\.dirtTexture: texture parameters not implemented/],
+    [{ components: [{ class: "FilmGrain", active: true, texture: { m_PathID: 5 } }] }, /FilmGrain\.texture: texture parameters/],
+  ]) assert.throws(() => spotVolumeStack({ volume: spotVol(over) }, HOME_VIEW_MASK, "home spot 7"), re, JSON.stringify(over));
+  const stack = (components) => spotVolumeStack({ volume: spotVol({ weight: 1, components }) });
+  for (const [components, re] of [
+    [[{ class: "DepthOfField", active: true, mode: 1 }], /depth of field/],
+    [[{ class: "MotionBlur", active: true, intensity: 0.5 }], /motion blur/],
+    [[{ class: "AdvCurvedLens", active: true, intensity: 0.5 }], /AdvCurvedLens/],
+  ]) assert.throws(() => checkSpotStack(stack(components)), re);
+  const ok = stack([{ class: "Vignette", active: true, intensity: 0.3 }, { class: "ColorAdjustments", active: true, postExposure: 1 }]);
+  assert.equal(checkSpotStack(ok), ok);
+});
+
+test("host: the main camera draws the spot into its HDR colour target, then its post chain into the stack's target", async () => {
+  const { store, host } = litStore(RENDER_SETTINGS, { volume: spotVol() });
+  const { gl, calls } = litGL();
+  const loop = new PlayerLoop(30), post = postLib();
+  const h = await SimpleHomeHost.create(gl, store, loop, host, { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null, post });
+  assert.deepEqual(h.missing, []);
+  assert.equal(h.volumeStack.Bloom.intensity, F(4 * F(0.05)));
+  const target = new GLTarget(gl, 64, 32, { label: "SimpleScreen" });
+  calls.length = 0;
+  h.render(target, 64, 32);
+  const color = h.cameraColor;
+  assert.equal(color.width, 64); assert.equal(color.height, 32);
+  assert.ok(calls.some(([n, a]) => n === "texImage2D" && a[1] === 0 && a[2] === gl.RGBA16F && a[3] === 64 && a[4] === 32),
+            "an RGBA16F camera colour at the screen size");
+  // the chain: LUT, bloom (prefilter, down / up per mip, upsample), uber last
+  const order = post.blits.map((b) => `${b.shader}:${b.pass}`);
+  assert.equal(order[0], "LutBuilderLdr:0");
+  assert.equal(order.at(-1), "UberPost:0");
+  assert.equal(order[1], "Bloom:0");
+  assert.ok(order.includes("Bloom:3"));
+  const uber = post.blits.at(-1);
+  assert.equal(uber.value("_BlitTexture"), color);
+  assert.deepEqual(uber.keywords, ["_BLOOM_LQ", "_ENABLE_ALPHA_OUTPUT", "_USE_FAST_SRGB_LINEAR_CONVERSION"]);
+  assert.equal(uber.value("_Bloom_Params")[0], F(4 * F(0.05)));
+  const lut = post.blits[0], t = F(0.05);
+  assert.equal(lut.value("_SplitShadows")[3], F(F(F(-20) * t) / 100));
+  assert.equal(lut.value("_SplitHighlights")[2], F(F(0.5) + F(F(F(0.72) - F(0.5)) * t)));
+  // the uber pass writes the target given
+  const uberDraw = calls.map(([n], i) => [n, i]).filter(([n]) => n === "drawArrays").at(-1)[1];
+  const bound = calls.slice(0, uberDraw).filter(([n, a]) => n === "bindFramebuffer" && a[0] === gl.FRAMEBUFFER).at(-1);
+  assert.equal(bound[1][1], target.fb);
+  // a resize makes the colour target again
+  h.render(target, 32, 16);
+  assert.notEqual(h.cameraColor, color);
+  assert.equal(h.cameraColor.width, 32);
+  assert.equal(h.hdr, true);
+  gl.deleteTexture = () => {};
+  h.dispose();
+  // HDR needs the pipeline asset's support as well as the camera's: RGBA8 otherwise
+  const ldr = litStore(RENDER_SETTINGS, { volume: spotVol() }), g2 = litGL();
+  const graphics = { ...GRAPHICS, pipelines: { ...GRAPHICS.pipelines, Best: pipeline({ m_AdditionalLightsRenderingMode: 2, m_SupportsHDR: 0 }) } };
+  const h2 = await SimpleHomeHost.create(g2.gl, ldr.store, new PlayerLoop(30), ldr.host,
+                                         { camera: DRAWN_CAM, graphics, quality: 1, spine: null, post: postLib() });
+  assert.equal(h2.hdr, false);
+  g2.calls.length = 0;
+  h2.render(new GLTarget(g2.gl, 64, 32, { label: "SimpleScreen" }), 64, 32);
+  assert.equal(g2.calls.some(([n, a]) => n === "texImage2D" && a[2] === g2.gl.RGBA16F && a[3] === 64), false);
+  g2.gl.deleteTexture = () => {};
+  h2.dispose();
+});
+
+test("host: the film grain follows the host option; the grain textures load only when it is drawn", async () => {
+  const grainVol = spotVol({ weight: 1, components: [{ class: "FilmGrain", active: true, type: 1, intensity: 0.5 }] });
+  const desc = (i) => ({ texture: `textures/g${i}.png`, name: `g${i}`, width: 8, height: 8, mipCount: 1,
+                         settings: { m_FilterMode: 1, m_WrapU: 0, m_WrapV: 0 } });
+  const textures = { Runtime: { filmGrainTex: Array.from({ length: 10 }, (_, i) => desc(i)) } };
+  const make = async (post) => {
+    const { store, host } = litStore(RENDER_SETTINGS, { volume: grainVol });
+    const loaded = [];
+    store.image = async (p) => { loaded.push(p); return { width: 8, height: 8, close() {} }; };
+    const { gl } = litGL();
+    bindAssets(gl, store);
+    const p = postLib();
+    const h = await SimpleHomeHost.create(gl, store, new PlayerLoop(30), host,
+                                          { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null, post: { ...post, lib: p.lib } });
+    const target = new GLTarget(gl, 64, 32, { label: "SimpleScreen" });
+    h.render(target, 64, 32);
+    gl.deleteTexture = () => {};
+    return { h, loaded, uber: p.blits.at(-1) };
+  };
+  // default: no film grain, nothing loaded
+  const off = await make({ textures });
+  assert.deepEqual(off.loaded, []);
+  assert.equal(off.uber.keywords.includes("_FILM_GRAIN"), false);
+  off.h.dispose();
+  // the option on: the renderer's textures, the grain by type, tiled by the game's screen pixels
+  const on = await make({ textures, filmGrain: 1, screenScale: () => 0.5 });
+  assert.equal(on.loaded.length, 10);
+  assert.ok(on.uber.keywords.includes("_FILM_GRAIN"));
+  assert.equal(on.uber.value("_Grain_Texture"), on.h.grain[1]);
+  assert.deepEqual(on.uber.value("_Grain_Params"), [2, VOLUME_DEFAULTS.FilmGrain.response]);
+  assert.deepEqual(on.uber.value("_Grain_TilingParams").slice(0, 2), [4, 2]);
+  on.h.dispose();
+  // the option on without the textures: refused before drawing
+  await assert.rejects(make({ textures: {}, filmGrain: 1 }), /film grain textures of renderer Runtime/);
+});
+
+test("host: a drawn session refuses a spot volume or camera setting the chain does not draw, before any GL call", async () => {
+  const { store, host } = litStore(RENDER_SETTINGS, { volume: spotVol({ isGlobal: false }) });
+  const loop = new PlayerLoop(30);
+  const h = await SimpleHomeHost.create(null, store, loop, host, { camera: DRAWN_CAM, graphics: GRAPHICS, quality: 1, spine: null,
+                                                                   post: postLib() });
+  assert.deepEqual(h.missing, []);                                                  // a headless session plays it
+  h.gl = new Proxy({}, { get: () => { throw new Error("GL call"); } });
+  await assert.rejects(h._upload(), /home spot 1: local Volume bg/);
+  h.postOpts = {};
+  await assert.rejects(h._upload(), /needs the story's shaders/);
+  h.cameraSettings = { ...DRAWN_CAM, antialiasing: 1 };
+  await assert.rejects(h._upload(), /antialiasing mode 1/);
   h.gl = null;
   h.dispose();
 });

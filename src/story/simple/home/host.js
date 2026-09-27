@@ -1,10 +1,12 @@
 import { join } from "../../../engine/core.js";
 import { applyState, ShaderLib } from "../../../engine/glsl.js";
 import { mat4, quat } from "../../../engine/math.js";
-import { GLTex } from "../../../engine/texture.js";
+import { CURVE_DEFAULTS, URPPost } from "../../../engine/postfx.js";
+import { GLTarget, GLTex } from "../../../engine/texture.js";
 import { blurPass, BLUR_SHADER, DualKawaseBlur, UIBlur } from "./blur.js";
 import { SpotCamera } from "./camera.js";
 import { imageBytes, parseGlb, textureInfo } from "./glb.js";
+import { checkSpotCamera, checkSpotStack, HOME_VIEW_MASK, spotVolumeStack } from "./post.js";
 import { materialQueue, ShaderInfo, sortDrawItems, SpotRoom } from "./room.js";
 import { skeletonDataVersion, spineRuntime, SpotSkeletonData } from "./spine.js";
 
@@ -14,7 +16,8 @@ import { skeletonDataVersion, spineRuntime, SpotSkeletonData } from "./spine.js"
 //     the renderers active after SpotBackground.Prepare, the floor queue override (room.js), and for the Lit materials
 //     URP's lighting state of the main camera in the spot (spotLighting);
 //   - Spine characters (SpotSpineCharacter / SkeletonAnimation) through the page's Spine runtime (spine.js);
-//   - the main camera: default pose, focus and return tweens, Reset (camera.js);
+//   - the main camera: default pose, focus and return tweens, Reset (camera.js), and its post-processing: the spot's
+//     volume stack through the URP post chain (post.js);
 //   - the UI blur: rate ramp and the Dual Kawase pass on the camera colour (blur.js).
 // Scene placement (SpotSceneRoot.SetObject): the background and situation prefabs are parented under _objRoot
 // keeping their local transforms; the background root then gets localPosition = backgroundPosition, eulerAngles (world)
@@ -23,11 +26,9 @@ import { skeletonDataVersion, spineRuntime, SpotSkeletonData } from "./spine.js"
 // the background root's own serialized transform included: home.roomRoot ({localPosition, localRotation, localScale}
 // of that root) is taken back out before the situation's transform goes on; without it the baked space is taken as the
 // root's local space.
-// The spot's Volume (post-processing of the main camera) is not drawn; `missing` lists it when the data has one.
 // With gl = null nothing is drawn and every timing (camera tweens, blur ramp, Spine updates) still runs.
 
 export const SPINE_MISSING = "Spine runtime missing";
-export const VOLUME_MISSING = "spot Volume post-processing";
 // A tap talk whose character no SpotCharacter of the spot carries: the game starts a tap talk only from a tapped
 // SpotCharacter (HomeSpotAfterTalkRequestFactory.TrySelectAdv: MasterStoryHomeSpotTapTalkEpisode._spotId == the spot
 // and _characterId == the tapped SpotCharacter's _characterId), so it never plays such a talk; the session plays it
@@ -184,11 +185,15 @@ export const spotLighting = ({ graphics, quality, rendererIndex, renderSettings,
 
 export class SimpleHomeHost {
   // gl: WebGL2 context or null; store: the story's AssetStore; loop: the session's PlayerLoop; host: host/host.json;
-  // opts: {camera: {near, far, clearFlags, clearColor: [r, g, b, a], orthographicSize, rendererIndex} of the story
-  //        scene's main camera (Camera and UniversalAdditionalCameraData),
+  // opts: {camera: {near, far, clearFlags, clearColor: [r, g, b, a], orthographicSize, rendererIndex, hdr, volumeMask}
+  //        of the main camera in the spot (post.js spotMainCamera),
   //        graphics: scene.json `player` (the render settings tree), quality: the quality level (BaseQualityMode),
+  //        post: {lib: the ShaderLib of the story's shaders (the URP post programs), textures: scene.json
+  //               `postTextures` (by renderer name), filmGrain: multiplier of FilmGrain.intensity (default 0: none),
+  //               screenScale(width): the game's screen pixels per pixel of the target (default 1)},
   //        spine: a Spine runtime (default globalThis.spine; null for none)}
-  // A drawn host needs graphics, quality and the camera's orthographicSize (URP's lighting state, spotLighting).
+  // A drawn host needs graphics, quality, the camera's orthographicSize (URP's lighting state, spotLighting) and
+  // post.lib (the main camera's post chain).
   static async create(gl, store, loop, host, opts = {}) {
     const h = new SimpleHomeHost(gl, store, loop, host, opts);
     try { if (gl) await h._upload(); } catch (e) { h.dispose(); throw e; }
@@ -219,9 +224,13 @@ export class SimpleHomeHost {
     this.quality = opts.quality;
     this.clearFlags = cam.clearFlags ?? CLEAR_SOLID;
     this.clearColor = colorOf(cam.clearColor);
+    this.cameraHDR = cam.hdr !== false;
+    this.hdr = false;                       // the camera colour's HDR (_postSetup)
+    this.volumeMask = cam.volumeMask ?? HOME_VIEW_MASK;
+    this.cameraSettings = cam;
+    this.postOpts = opts.post || {};
     this.blur = new UIBlur(loop);
     this.blurParams = home.blur;
-    if (home.volume || (home.sceneRoot && home.sceneRoot.volumes && home.sceneRoot.volumes.length)) this.missing.push(VOLUME_MISSING);
     this.skeletons = [];
     this.spineReason = null;
     this._hooks = [];
@@ -302,8 +311,26 @@ export class SimpleHomeHost {
   // the keywords of a material's programs: its own and the camera's global lighting keywords
   _keywords(mat) { return [...(mat.keywords || []), ...this.lighting.keywords]; }
 
+  // the main camera's volume stack (post.js) and what its post chain needs: checked before any GL call
+  _postSetup() {
+    const what = `home spot ${this.home.spotId}`, P = this.postOpts;
+    checkSpotCamera(this.cameraSettings, what);
+    if (!P.lib) throw new Error(`${what}: the main camera's post-processing needs the story's shaders (opts.post.lib)`);
+    // UniversalRenderPipeline.InitializeStackedCameraData: HDR = Camera.allowHDR && the pipeline asset's supportsHDR
+    this.hdr = this.cameraHDR && !!this.graphics.pipelines[this.lighting.pipeline].m_SupportsHDR;
+    const stack = checkSpotStack(spotVolumeStack(this.home, this.volumeMask, what), what);
+    this.filmGrain = P.filmGrain ?? 0;
+    const G = stack.FilmGrain, grain = G.intensity * this.filmGrain > 0 && G.type !== 10;
+    const renderer = this.lighting.renderer, tex = P.textures && P.textures[renderer];
+    if (grain && !(tex && Array.isArray(tex.filmGrainTex)))
+      throw new Error(`${what}: the film grain textures of renderer ${renderer} are not in the story's postTextures`);
+    return { stack, grainDescs: grain ? tex.filmGrainTex : null };
+  }
+
   async _upload() {
     this.lighting = this._lighting();
+    const post = this._postSetup();
+    this.volumeStack = post.stack;
     const gl = this.gl;
     this.lib = new ShaderLib(gl, this.shaderBase, this.store);
     this.vao = gl.createVertexArray();
@@ -354,6 +381,11 @@ export class SimpleHomeHost {
     }
     if (!this.shaders.has(BLUR_SHADER)) throw new Error(`host shaders: ${BLUR_SHADER} not packed`);
     this.kawase = new DualKawaseBlur(gl, this.lib);
+    // the main camera's post chain: the renderer's film grain textures (only when the grain is drawn), its LUT
+    this.urp = new URPPost(gl, this.postOpts.lib, { vao: this.vao });
+    this.grain = post.grainDescs ? await URPPost.loadGrain(gl, "", post.grainDescs) : [];
+    this.urp.initLut();
+    this.cameraColor = null;
     this.room.glb = null;                 // the file's bytes are no longer needed
   }
 
@@ -464,8 +496,44 @@ export class SimpleHomeHost {
   resetCamera() { this.camera.reset(); }
 
   // ------------------------------------------------------------------------------------------------------ drawing
-  // The main camera into `target` (a GLTarget of width x height): clear per the camera's clear flags, then URP's
-  // opaque and transparent lists of the room's renderers and the Spine renderers.
+  // The main camera into `target` (a GLTarget of width x height, the camera stack's colour target, which the UI camera
+  // draws on): the spot into the camera's colour target (renderScene), then its post chain with the spot's volume
+  // stack from there into `target`. The main camera is not the last camera of its stack: the uber pass takes the film
+  // grain, and no FinalPost runs here.
+  render(target, width, height) {
+    if (!this.gl) return;
+    const color = this._cameraColor(width, height);
+    this.renderScene(color, width, height);
+    const cam = this.camera, P = this.postOpts;
+    this.urp.render(this.volumeStack, color, target, {
+      width, height, frameCount: this.loop.frameCount, grain: this.grain,
+      grainScale: P.screenScale ? P.screenScale(width) : 1, grainIntensity: this.filmGrain,
+      gray: this.tex.gray, black: this.tex.black, depth: null,
+      camera: { view: cam.viewMatrix(), proj: cam.projection(width / height), near: cam.near, far: cam.far } });
+    target.bind();
+  }
+
+  // the main camera's colour target at the screen size: RGBA16F for an HDR camera (as the story renderer's camera
+  // colour), else RGBA8
+  _cameraColor(width, height) {
+    const gl = this.gl, c = this.cameraColor;
+    if (c && c.width === width && c.height === height) return c;
+    if (c) this._releaseCameraColor();
+    const fmt = this.hdr ? { internal: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT } : {};
+    this.cameraColor = new GLTarget(gl, width, height, { ...fmt, label: "CameraColor" });
+    this.urp.resizeBloom(width, height);
+    return this.cameraColor;
+  }
+
+  _releaseCameraColor() {
+    const gl = this.gl, c = this.cameraColor, e = this.frameBuffers.get(c);
+    if (e) { gl.deleteFramebuffer(e.fb); gl.deleteRenderbuffer(e.depth); this.frameBuffers.delete(c); }
+    c.release();
+    this.cameraColor = null;
+  }
+
+  // The main camera's draws into `target` (a GLTarget of width x height): clear per the camera's clear flags, then
+  // URP's opaque and transparent lists of the room's renderers and the Spine renderers.
   renderScene(target, width, height) {
     const gl = this.gl;
     if (!gl) return;
@@ -603,6 +671,8 @@ export class SimpleHomeHost {
     const gl = this.gl;
     if (!gl) return;
     if (this.kawase) this.kawase.dispose();
+    if (this.cameraColor) this._releaseCameraColor();
+    if (this.urp) this._releasePost();
     for (const b of this.buffers || []) gl.deleteBuffer(b);
     for (const t of [...(this.textures || []), ...Object.values(this.tex || {})]) gl.deleteTexture(t.glTexture);
     for (const e of (this.frameBuffers || new Map()).values()) { gl.deleteFramebuffer(e.fb); gl.deleteRenderbuffer(e.depth); }
@@ -612,5 +682,23 @@ export class SimpleHomeHost {
       for (const b of p.blocks) gl.deleteBuffer(b.buffer);
     }
     this.buffers = []; this.textures = []; this.frameBuffers = new Map(); this.tex = {}; this.vao = null;
+  }
+
+  // the post chain's targets and textures: the grain, the LUT, the bloom mips, the named targets and the curve
+  // textures of the stack's ColorCurves (its programs belong to the story's ShaderLib)
+  _releasePost() {
+    const gl = this.gl, u = this.urp;
+    for (const t of this.grain || []) gl.deleteTexture(t.glTexture);
+    if (u.lut) u.lut.release();
+    for (const m of u.bloom) { m.down.release(); m.up.release(); }
+    for (const t of u.targets.values()) t.release();
+    const curves = new Set(this.volumeStack ? Object.values(this.volumeStack.ColorCurves) : []);
+    for (const c of Object.values(CURVE_DEFAULTS)) curves.add(c);
+    const seen = new Set();
+    for (const c of curves) {
+      const t = u.curveTex.get(c);
+      if (t && !seen.has(t)) { seen.add(t); gl.deleteTexture(t.glTexture); }
+    }
+    this.urp = null; this.grain = [];
   }
 }
