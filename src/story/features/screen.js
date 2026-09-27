@@ -180,7 +180,7 @@ export class StoryScreen {
     if (!ctx.gl) return;
     const libs = [new ShaderLib(ctx.gl, "shaders", ctx.assets), new ShaderLib(ctx.gl, uiShaderBase(this.ui, this.uiDir), ctx.assets)];
     const packs = new ShaderPacks(libs);
-    this.gl = new CanvasGL(ctx.gl, packs, ctx.assets);
+    this.gl = new CanvasGL(ctx.gl, packs, ctx.assets, ctx.ui);          // the story UI draws the canvas texts
     await this.gl.load(GLTex, this.canvases.map(([, c]) => c));
     const R = ctx.renderer;
     if (!R) throw new StoryCommandError("the video and still camera's post-processing needs the story renderer");

@@ -9,6 +9,7 @@ import { commandHandler, createStoryUILayers } from "../../src/story/interfaces.
 import { disposeStoryFeatures, installStoryFeatures } from "../../src/story/features/index.js";
 import { frameView, slanderText } from "../../src/story/features/frame.js";
 import { clampedCanvasSize } from "../../src/story/features/canvas.js";
+import { UILayout } from "../../src/engine/ugui.js";
 
 const FLT_MIN = -3.4028234663852886e+38;
 const flush = () => new Promise((res) => setImmediate(res));
@@ -271,5 +272,179 @@ test("Frame: a RectTransform under a plain Transform is laid out against a zero-
   const cx = W / 2 + 100 + 2 * 10, cy = H / 2 + 50;                       // anchors at the holder's origin, then its scale 2
   assert.deepEqual(box.map((x) => Math.round(x * 100) / 100),
                    [cx - 20, cy - 20, cx + 20, cy + 20].map((x) => Math.round(x * 100) / 100));
+  disposeStoryFeatures(t.ctx);
+});
+
+// ------------------------------------------------------------------------------------------------ comment frame texts
+// a synthetic SDF font (point size 100, ascent 90, descent -30, line height 120; glyphs 50 x 70 with bearing (5, 70)
+// and advance 60; space advance 30) and text bindings as the story UI's fonts carry them
+const TEXT_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789 @";
+const testFont = (() => {
+  const characters = {}, glyphs = {};
+  [...TEXT_CHARS].forEach((ch, i) => {
+    const gi = i + 1, space = ch === " ";
+    characters[String(ch.codePointAt(0))] = { glyph: gi, scale: 1, elementType: 1 };
+    glyphs[String(gi)] = {
+      metrics: space ? { m_Width: 0, m_Height: 0, m_HorizontalBearingX: 0, m_HorizontalBearingY: 0, m_HorizontalAdvance: 30 }
+                     : { m_Width: 50, m_Height: 70, m_HorizontalBearingX: 5, m_HorizontalBearingY: 70, m_HorizontalAdvance: 60 },
+      rect: space ? { m_X: 0, m_Y: 0, m_Width: 0, m_Height: 0 } : { m_X: (i % 16) * 64 + 8, m_Y: Math.floor(i / 16) * 96 + 8, m_Width: 50, m_Height: 70 },
+      scale: 1, atlasIndex: 0, packed: { texture: "page0", dx: 0, dy: 0 } };
+  });
+  return { name: "Test SDF", faceInfo: { m_PointSize: 100, m_Scale: 1, m_LineHeight: 120, m_AscentLine: 90, m_DescentLine: -30,
+                                          m_Baseline: 0, m_TabWidth: 25 },
+           normalStyle: 0, normalSpacingOffset: 0, boldStyle: 0.75, boldSpacing: 7, tabSize: 10, characters, glyphs,
+           glyphPairAdjustmentRecords: 0, textureSize: { page0: { width: 1024, height: 1024 } },
+           lineBreaking: { leading: "", following: "", useModernHangulLineBreakingRules: false } };
+})();
+const testMaterial = { material: "Test - Default", keywords: [],
+                       floats: { _GradientScale: 10, _ScaleRatioA: 1, _ScaleRatioC: 1, _FaceDilate: 0, _OutlineWidth: 0, _OutlineSoftness: 0 } };
+const tmpRecord = (over = {}) => ({
+  class: "TextMeshProUGUI", enabled: 1, m_text: "", m_fontSize: 54, m_fontSizeBase: 54, m_enableAutoSizing: 0, m_fontSizeMin: 18,
+  m_fontSizeMax: 72, m_charWidthMaxAdj: 0, m_lineSpacingMax: 0, m_fontStyle: 0, m_HorizontalAlignment: 1,
+  m_VerticalAlignment: 256, m_characterSpacing: 0, m_wordSpacing: 0, m_paragraphSpacing: 0, m_TextWrappingMode: 0,
+  m_overflowMode: 0, m_isRichText: 1, m_parseCtrlCharacters: 1, m_overrideHtmlColors: 0, m_useMaxVisibleDescender: 1,
+  m_margin: { x: 0, y: 0, z: 0, w: 0 }, m_fontColor: { r: 1, g: 1, b: 1, a: 1 }, m_ActiveFontFeatures: [],
+  m_isOrthographic: 1, m_isRightToLeft: 0, m_enableVertexGradient: 0, m_characterHorizontalScale: 1,
+  m_horizontalMapping: 0, m_verticalMapping: 0, m_enableExtraPadding: 0, ...over });
+const bindingOf = (over) => ({ ...tmpRecord(over), localized: { fontAsset: "Test SDF", material: "Test - Default", lineSpacing: 0 } });
+
+// a comment frame: one pattern "p1" with one card (header: user name and id under a controlled horizontal layout
+// group; body), under a fitter whose parent is 960 x 443 at anchored position (0, 24)
+const SC = "sc", CARD = `${SC}/Root/Camera/Coments/P1/Card`;
+const TEXT_PATHS = { userName: `${CARD}/Header/UserName`, userId: `${CARD}/Header/UserId`, body: `${CARD}/Body` };
+const commentFrame = () => {
+  const ctrl = { controller: SC, name: SC, parameters: [], defaultValues: [],
+    layers: [{ name: "Base Layer", stateMachine: 0, defaultWeight: 0, blending: 0 }],
+    clips: [clip("p1", 0.5, false, [{ b: alphaB, from: 1, to: 1 }])],
+    stateMachines: [{ defaultState: 0, anyStateTransitions: [], states: [state("p1", 1, 0, false)] }] };
+  const animator = { type: "Animator", m_Enabled: 1, m_Controller: ctrl, m_CullingMode: 0, m_UpdateMode: 0,
+                     m_ApplyRootMotion: false, m_KeepAnimatorStateOnDisable: false };
+  const ref = (cls, gameObject) => ({ class: cls, component: "MonoBehaviour", gameObject });
+  const text = (path, over) => node(path, [{ type: "CanvasRenderer" }, { type: "MonoBehaviour", m_Enabled: 1, ...tmpRecord(over) },
+    { type: "MonoBehaviour", class: "LocalizeText", m_Enabled: 1, _masterTextID: "0", _localizeEnabled: 1 },
+    { type: "MonoBehaviour", class: "UIText", m_Enabled: 1, _localizeText: ref("LocalizeText", path), _targetText: ref("TextMeshProUGUI", path) }],
+    rect({ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 1 }));
+  const hlg = { type: "MonoBehaviour", class: "HorizontalLayoutGroup", m_Enabled: 1, m_Padding: { m_Left: 0, m_Right: 0, m_Top: 0, m_Bottom: 0 },
+                m_ChildAlignment: 3, m_Spacing: 10, m_ChildForceExpandWidth: 0, m_ChildForceExpandHeight: 0, m_ChildControlWidth: 1,
+                m_ChildControlHeight: 1, m_ChildScaleWidth: 0, m_ChildScaleHeight: 0, m_ReverseArrangement: 0 };
+  const body = text(TEXT_PATHS.body, { m_fontSize: 52, m_fontSizeBase: 52 });
+  body.rect = rect({ x: 0, y: 1 }, { x: 0, y: 1 }, { x: 226, y: -122 }, { x: 1070, y: 140 }, { x: 0, y: 1 });
+  return { key: `Adv/Frame/${SC}`, nodes: [
+    node(SC, [{ type: "MonoBehaviour", class: "AdvFrame", m_Enabled: 1, _canvasGroup: { component: "CanvasGroup", gameObject: SC },
+                _animator: { component: "Animator", gameObject: `${SC}/Root` }, _screenPadding: null }, cg(1),
+              { type: "MonoBehaviour", class: "AdvSlanderCommentFrame", m_Enabled: 1,
+                _patterns: [{ _animatorStateName: "p1", _nodes: [ref("AdvSlanderCommentNode", CARD)] }] }]),
+    node(`${SC}/Root`, [animator, cg(1)]),
+    node(`${SC}/Root/Camera`, [], rect({ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }, { x: 0, y: 24 }, { x: 960, y: 443 }, { x: 0.5, y: 0.5 })),
+    node(`${SC}/Root/Camera/Coments`, [{ type: "MonoBehaviour", class: "AdvSlanderCommentFrameFitter", m_Enabled: 1 }],
+         rect({ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }, { x: 0, y: 0 }, { x: 100, y: 100 }, { x: 0.5, y: 0.5 })),
+    node(`${SC}/Root/Camera/Coments/P1`, []),
+    node(CARD, [{ type: "MonoBehaviour", class: "AdvSlanderCommentNode", m_Enabled: 1, _userName: ref("UIText", TEXT_PATHS.userName),
+                  _userId: ref("UIText", TEXT_PATHS.userId), _body: ref("UIText", TEXT_PATHS.body) }],
+         rect({ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }, { x: 0, y: 0 }, { x: 1300, y: 300 }, { x: 0.5, y: 0.5 })),
+    node(`${CARD}/Header`, [hlg], rect({ x: 0, y: 1 }, { x: 0, y: 1 }, { x: 226, y: -36 }, { x: 1100, y: 64 }, { x: 0, y: 1 })),
+    text(TEXT_PATHS.userName, { m_fontStyle: 1, m_VerticalAlignment: 512 }),
+    text(TEXT_PATHS.userId, { m_VerticalAlignment: 512 }),
+    body,
+  ] };
+};
+// the story UI's text host with the frame's bindings (`skip`: paths without one); checkNodeTexts records its calls
+const textUI = ({ mode = 0, skip = [], problem = null } = {}) => {
+  const frameTexts = { [SC]: {} };
+  const over = { [TEXT_PATHS.userName]: { m_fontStyle: 1, m_VerticalAlignment: 512 }, [TEXT_PATHS.userId]: { m_VerticalAlignment: 512 },
+                 [TEXT_PATHS.body]: { m_fontSize: 52, m_fontSizeBase: 52 } };
+  for (const [p, o] of Object.entries(over)) if (!skip.includes(p)) frameTexts[SC][p] = bindingOf(o);
+  const checked = [];
+  return { layers: createStoryUILayers(), fonts: { frameTexts }, language: { mode }, emojiSpriteAsset: null, checked,
+           fontAsset: () => testFont, material: () => testMaterial,
+           checkNodeTexts(n, texts, problems) { checked.push([n.path, texts]); if (problem) problems.add(problem); } };
+};
+const ROW = { cmd: "Frame", TargetAssetName: SC, Parameter2: "p1", TargetTextIDs: ["1", "2", "3"] };
+const commentPlayer = (ui, frame = commentFrame()) => {
+  const t = makePlayer([ROW], { [SC]: frame });
+  t.ctx.ui = { ...ui, layers: ui.layers };
+  return t;
+};
+
+test("Frame: the comment texts go through the UIText setter; the header lays out by preferred sizes; the fitter scales", async () => {
+  const ui = textUI(), t = commentPlayer(ui);
+  await installStoryFeatures(t.ctx, t.p);
+  const f = frameView(t.ctx).loaded(SC), n = (k) => f.prefab.node(TEXT_PATHS[k]);
+  // the load checks the texts the rows give the bound nodes (AdvSlanderCommentTextHelper output)
+  assert.deepEqual(t.ctx.ui.checked, [[TEXT_PATHS.userName, ["text 1"]], [TEXT_PATHS.userId, ["@text 2"]], [TEXT_PATHS.body, ["text 3"]]]);
+  assert.equal(n("userName").text.wrapping, 0);
+  await settle(t.loop, run(t, ROW));
+  assert.equal(n("userName").text.text, "text 1");
+  assert.equal(n("userId").storyText.getText(), "@text 2");
+  assert.deepEqual(f.snapshot()[5], [[["text 1", "@text 2", "text 3"]]]);
+  const screen = frameView(t.ctx).screen;
+  screen.layoutAll(2340, 1080);
+  // AdvSlanderCommentFrameFitter: s = min(960 / 1920, 443 / 886, 1) = 0.5; anchored position (0.5 - 1) x (0, 24)
+  const coments = f.prefab.node(`${SC}/Root/Camera/Coments`);
+  assert.deepEqual([coments.localScale.x, coments.localScale.y, coments.localScaleZ], [0.5, 0.5, 0.5]);
+  assert.deepEqual([coments.anchoredPosition.x + 0, coments.anchoredPosition.y], [0, -12]);
+  // HorizontalLayoutGroup (MiddleLeft, spacing 10, child width / height controlled, no expand): preferred sizes
+  const w1 = n("userName").text.preferredWidth(), w2 = n("userId").text.preferredWidth(), h1 = n("userName").text.preferredHeight();
+  assert.equal(n("userName").sizeDelta.x, w1);
+  assert.equal(n("userId").sizeDelta.x, w2);
+  assert.equal(n("userId").anchoredPosition.x, Math.fround(w1 + 10));
+  assert.equal(n("userName").sizeDelta.y, Math.min(64, h1));
+  // drawn: the TMP meshes after the layout, the SDF scale x the canvas-relative scale (0.5)
+  const items = screen.canvas.frame.drawItems().filter((it) => it.text);
+  assert.deepEqual(items.map((it) => [it.node.path, it.kind, it.material, it.texture]),
+                   Object.values(TEXT_PATHS).map((p) => [p, "text", "Test - Default", "page0"]));
+  const body = n("body").text;
+  assert.equal(items[2].verts[10], Math.fround(body.chars[0].xScale * 0.5));
+  assert.ok(items[0].verts[10] < 0);                                       // bold: the sign of the SDF scale
+  // OnDisable clears every node through the setter
+  f.setActive(false);
+  assert.equal(n("body").text.text, "");
+  disposeStoryFeatures(t.ctx);
+});
+
+test("Frame: comment text bindings in English wrap; unbound texts refuse to draw; the load refuses texts the fonts cannot lay out", async () => {
+  const en = commentPlayer(textUI({ mode: 1 }));
+  await installStoryFeatures(en.ctx, en.p);
+  assert.equal(frameView(en.ctx).loaded(SC).prefab.node(TEXT_PATHS.body).text.wrapping, 1);   // LocalizeText.OnFontChanged
+  disposeStoryFeatures(en.ctx);
+  const bare = commentPlayer(textUI({ skip: [TEXT_PATHS.body] }));
+  await installStoryFeatures(bare.ctx, bare.p);
+  const f = frameView(bare.ctx).loaded(SC);
+  assert.equal(f.prefab.node(TEXT_PATHS.body).text, undefined);
+  await settle(bare.loop, run(bare, ROW));
+  assert.equal(f.prefab.node(TEXT_PATHS.body).tmp.text, "text 3");
+  const screen = frameView(bare.ctx).screen;
+  screen.layoutAll(2340, 1080);
+  assert.throws(() => screen.canvas.frame.drawItems(), /canvas text without a text binding/);
+  disposeStoryFeatures(bare.ctx);
+  const drawing = commentPlayer(textUI({ skip: [TEXT_PATHS.body] }));      // a session that draws refuses it at load
+  drawing.ctx.gl = {};
+  await assert.rejects(installStoryFeatures(drawing.ctx, drawing.p), /frame sc: texts without a text binding \(ui\/fonts.json frameTexts\): sc\/Root\/Camera\/Coments\/P1\/Card\/Body$/);
+  const bad = commentPlayer(textUI({ problem: "Test SDF: U+0021 not in the font data" }));
+  await assert.rejects(installStoryFeatures(bad.ctx, bad.p), /frame sc: texts the story UI cannot lay out: Test SDF: U\+0021/);
+});
+
+test("FrameCanvas: the story UI's auto layout places an uncontrolled layout group's children as the uncontrolled rebuild does", async () => {
+  const name = "hl";
+  const hlg = { type: "MonoBehaviour", class: "HorizontalLayoutGroup", m_Enabled: 1, m_Padding: { m_Left: 12, m_Right: 4, m_Top: 3, m_Bottom: 5 },
+                m_ChildAlignment: 4, m_Spacing: 7.5, m_ChildForceExpandWidth: 1, m_ChildForceExpandHeight: 0, m_ChildControlWidth: 0,
+                m_ChildControlHeight: 0, m_ChildScaleWidth: 0, m_ChildScaleHeight: 0, m_ReverseArrangement: 0 };
+  const sized = (p, w, h, pivot) => node(p, [{ type: "CanvasRenderer" }, image({ r: 1, g: 1, b: 1, a: 1 })],
+                                         rect({ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }, { x: 3, y: -2 }, { x: w, y: h }, pivot));
+  const frame = { key: `Adv/Frame/${name}`, nodes: [...fill(name).nodes,
+    node(`${name}/Row`, [hlg], rect({ x: 0, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0, y: 40 }, { x: -200, y: 120 }, { x: 0.5, y: 0.5 })),
+    sized(`${name}/Row/A`, 300, 80, { x: 0.25, y: 0.75 }), sized(`${name}/Row/B`, 140.5, 60, { x: 0.5, y: 0.5 })] };
+  const t = makePlayer([{ cmd: "Frame", TargetAssetName: name }], { [name]: frame });
+  await installStoryFeatures(t.ctx, t.p);
+  await settle(t.loop, run(t, { TargetAssetName: name }));
+  const v = frameView(t.ctx), prefab = v.loaded(name).prefab, canvas = v.screen.canvas.frame;
+  const kids = [prefab.node(`${name}/Row/A`), prefab.node(`${name}/Row/B`)];
+  const placed = () => kids.map((k) => [k.anchorMin, k.anchorMax, k.anchoredPosition, k.sizeDelta, k.matrix].map((x) => JSON.stringify(x)));
+  const { W, H } = canvas.canvasSize(2340, 1080);
+  canvas.layout(W, H);
+  const story = placed();
+  UILayout.layoutRoot(canvas.root, W, H, (n) => UILayout.rebuildUncontrolled(n));
+  assert.deepEqual(story, placed());
+  assert.notEqual(kids[1].anchoredPosition.x, 3);                          // the group moved it
   disposeStoryFeatures(t.ctx);
 });

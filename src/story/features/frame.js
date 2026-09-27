@@ -1,6 +1,9 @@
-import { StoryCommandError } from "../interfaces.js";
+import { F } from "../../engine/core.js";
 import { UIError, uiRoundToInt } from "../../engine/ugui.js";
-import { CanvasAnimator, CanvasPrefab, bindCanvasProperty, compOf, compsOf } from "./canvas.js";
+import { TMPText } from "../../engine/uitext.js";
+import { StoryCommandError } from "../interfaces.js";
+import { StoryText } from "../ui-ruby.js";
+import { CanvasAnimator, CanvasNode, CanvasPrefab, bindCanvasProperty, compOf, compsOf } from "./canvas.js";
 import { AnimRecords } from "./clips.js";
 import { DOFloat } from "./dotween.js";
 import { stretchView, storyScreen } from "./screen.js";
@@ -44,7 +47,9 @@ export const slanderText = {
   },
 };
 
-// AdvSlanderCommentFrame (IAdvFrameTextReceiver): comment patterns by Animator state name, 3 texts per node
+// AdvSlanderCommentFrame (IAdvFrameTextReceiver): comment patterns by Animator state name, 3 texts per node. The
+// node's texts are set through AdvSlanderCommentNode.SetComment / Clear: UIText.SetText (String.Empty to clear) on
+// the TMP node of each UIText; a drawn frame's bound text takes it through StoryText (UIText.SetText).
 class SlanderCommentFrame {
   constructor(prefab, comp) {
     this.patterns = (comp._patterns || []).map((p) => ({
@@ -58,9 +63,24 @@ class SlanderCommentFrame {
     }));
   }
 
-  _set(n, s) { if (n && n.tmp) n.tmp.text = s; }
+  _set(n, s) {
+    if (!n || !n.tmp) return;
+    n.tmp.text = s;
+    if (n.storyText) n.storyText.setText(s);
+  }
 
   clearAll() { for (const p of this.patterns) for (const nd of p.nodes) if (nd) { this._set(nd.userName, ""); this._set(nd.userId, ""); this._set(nd.body, ""); } }
+
+  // the [node, text] pairs SetTexts(state, texts) gives the pattern's nodes, or null (no pattern, count mismatch)
+  formatted(state, texts) {
+    const p = this.patterns.find((x) => x.state === state);
+    if (!p || texts.length !== p.nodes.length * 3) return null;
+    return p.nodes.flatMap((nd, i) => {
+      if (!nd) return [];
+      const [name, id, body] = texts.slice(3 * i, 3 * i + 3);
+      return [[nd.userName, slanderText.userName(name)], [nd.userId, slanderText.userId(name, id)], [nd.body, slanderText.body(body)]];
+    });
+  }
 
   setTexts(state, texts) {
     this.clearAll();
@@ -70,15 +90,72 @@ class SlanderCommentFrame {
       console.warn(`frame comments: ${state} expects ${p.nodes.length * 3} texts, got ${texts.length}`);
       return;
     }
-    p.nodes.forEach((nd, i) => {
-      if (!nd) return;
-      const [name, id, body] = texts.slice(3 * i, 3 * i + 3);
-      this._set(nd.userName, slanderText.userName(name));
-      this._set(nd.userId, slanderText.userId(name, id));
-      this._set(nd.body, slanderText.body(body));
-    });
+    for (const [n, s] of this.formatted(state, texts)) this._set(n, s);
+  }
+
+  // the texts of the pattern nodes (user name, user id, body)
+  snapshot() {
+    return this.patterns.map((p) => p.nodes.map((nd) => (nd ? [nd.userName, nd.userId, nd.body].map((n) => (n && n.tmp ? n.tmp.text : null)) : null)));
   }
 }
+
+// AdvSlanderCommentFrameFitter.Fit: s = Mathf.Min(parent rect width / 1920, parent rect height / 886, 1) (the
+// reference canvas); localScale = (s, s, s); anchoredPosition = (s - 1) x the parent's anchoredPosition / the parent's
+// localScale.x. Nothing without a RectTransform parent or with a parent width, height or x scale <= 0.
+const FITTER_REFERENCE = { w: 1920, h: 886 };
+const slanderFit = (n, pr) => {
+  const parent = n.parent;
+  if (!(parent instanceof CanvasNode)) return;
+  const ps = parent.localScale.x;
+  if (pr.w <= 0 || pr.h <= 0 || ps <= 0) return;
+  const s = Math.min(F(pr.w / FITTER_REFERENCE.w), F(pr.h / FITTER_REFERENCE.h), 1);
+  n.localScale = { x: s, y: s }; n.localScaleZ = s;
+  const ap = parent.anchoredPosition, d = F(s - 1);
+  n.anchoredPosition = { x: F(F(d * ap.x) / ps), y: F(F(d * ap.y) / ps) };
+};
+
+// The fitter of a node: Fit on OnEnable (`dirty`, set by the frame when the node becomes active in the hierarchy)
+// and on the ScreenManager resolution callback it registers while enabled. The fit runs in the node's next layout
+// (before the draw that shows it); a resolution change reaches it as a new parent rect size.
+const slanderFitter = (n) => {
+  if (n.fitter) throw new UIError(`${n.path}: AdvSlanderCommentFrameFitter with another size fitter`);
+  const st = { node: n, dirty: false, w: null, h: null };
+  n.fitter = (node, pr) => {
+    if (!node.activeInHierarchy) return;
+    const resized = pr.w !== st.w || pr.h !== st.h;
+    st.w = pr.w; st.h = pr.h;
+    if (!st.dirty && !resized) return;
+    st.dirty = false;
+    slanderFit(node, pr);
+  };
+  return st;
+};
+
+const LANGUAGE_ENGLISH = 1;                            // Fwk.Localization.LanguageMode.English
+
+// The TMP components of a frame (the story UI's fonts: ui/fonts.json frameTexts[frame][node path]): TMPText
+// with the binding's localized font, material and line spacing (LocalizeText, _masterTextID "0": the font only),
+// LocalizeText.OnFontChanged (English: word wrapping on unless the object's name contains "nowrap"), UIText.Awake
+// (LocalizeManager's emoji sprite asset for UIText.SetText) and the serialized text as TMP's own. A node without a
+// binding keeps no text component: a drawing session refuses row texts for it (checkTexts), and it raises when it
+// would draw a text.
+const bindFrameTexts = (ui, name, prefab, bindings) => {
+  for (const n of prefab.nodes.values()) {
+    if (!n.tmp || !bindings[n.path]) continue;
+    const b = bindings[n.path], loc = compOf(n.rec, "LocalizeText");
+    if (loc && loc.m_Enabled && loc._localizeEnabled && loc._masterTextID && loc._masterTextID !== "0")
+      throw new UIError(`frame ${name}: ${n.path}: a localized serialized text (LocalizeText) not implemented`);
+    if (b.localizeKoreanAdjust && b.localizeKoreanAdjust.m_Enabled)
+      throw new UIError(`frame ${name}: ${n.path}: LocalizeKoreanAdjust not implemented`);
+    if (b.class && b.class !== n.tmp.cls) throw new UIError(`frame ${name}: ${n.path}: text binding class ${b.class} is not ${n.tmp.cls}`);
+    const t = n.text = new TMPText(ui, n, b);
+    t.enabled = n.tmp.enabled;
+    if (loc && loc.m_Enabled && loc._localizeEnabled && ui.language && ui.language.mode === LANGUAGE_ENGLISH &&
+        !n.name.toLowerCase().includes("nowrap")) t.setWrapping(1);
+    n.storyText = new StoryText(t, b, ui.emojiSpriteAsset || null);
+    t.setText(n.tmp.text);
+  }
+};
 
 // AdvFrame
 export class FrameInstance {
@@ -120,7 +197,38 @@ export class FrameInstance {
       });
     const sl = compOf(rootRec, "AdvSlanderCommentFrame");
     this.receiver = sl ? new SlanderCommentFrame(prefab, sl) : null;
+    this.fitters = [];
+    for (const rec of doc.nodes) {
+      const f = compOf(rec, "AdvSlanderCommentFrameFitter");
+      if (f && f.m_Enabled) this.fitters.push(slanderFitter(prefab.node(rec.path)));
+    }
+    // with the story UI's fonts the texts are laid out (and drawn) as the story UI lays out its own
+    const ui = view.ctx.ui, fonts = ui && ui.fonts;
+    if (fonts && fonts.frameTexts && fonts.frameTexts[name]) bindFrameTexts(ui, name, prefab, fonts.frameTexts[name]);
     this.init();
+  }
+
+  // At load, the texts the Frame rows of this frame give its text nodes: a session that draws refuses a text for a node
+  // without a text binding; StoryUI.checkNodeTexts raises what the story UI's fonts cannot lay out
+  checkTexts(ctx) {
+    if (!this.receiver) return;
+    const byNode = new Map(), unbound = new Set();
+    for (const c of ctx.episode.commands) {
+      if (c.cmd !== "Frame" || c.IgnoreData || (c.TargetAssetName ?? "") !== this.name || (c.Parameter2 ?? "") === "") continue;
+      const texts = (c.TargetTextIDs || []).map((id) => (id && id !== "0" ? ctx.localize(id) : ""));
+      for (const [n, s] of this.receiver.formatted(c.Parameter2, texts) || []) {
+        if (!n) continue;
+        if (!n.text) { if (s && ctx.gl) unbound.add(n.path); continue; }
+        if (!byNode.has(n)) byNode.set(n, []);
+        byNode.get(n).push(s);
+      }
+    }
+    if (unbound.size)
+      throw new StoryCommandError(`frame ${this.name}: texts without a text binding (ui/fonts.json frameTexts): ${[...unbound].join(", ")}`);
+    if (!ctx.ui || !ctx.ui.checkNodeTexts) return;
+    const problems = new Set();
+    for (const [n, texts] of byNode) ctx.ui.checkNodeTexts(n, texts, problems);
+    if (problems.size) throw new StoryCommandError(`frame ${this.name}: texts the story UI cannot lay out: ${[...problems].join("; ")}`);
   }
 
   _bindExtra(n, prop) {
@@ -141,6 +249,7 @@ export class FrameInstance {
     if (this.root.activeSelf === !!v) return;
     this.root.activeSelf = !!v;
     if (v) for (const a of this.animators) if (a.node.activeInHierarchy) a.onEnable();
+    if (v) for (const f of this.fitters) if (f.node.activeInHierarchy) f.dirty = true;   // the fitter's OnEnable
     if (this.receiver && !v) this.receiver.clearAll();                  // AdvSlanderCommentFrame.OnDisable
   }
 
@@ -221,7 +330,7 @@ export class FrameInstance {
   snapshot() {
     const a = this.animator && this.animator.currentState();
     return [this.name, this.isShowing, this.cg.alpha, a ? [a.state.name, a.time] : null,
-            this.view.node.children.indexOf(this.root)];
+            this.view.node.children.indexOf(this.root), ...(this.receiver ? [this.receiver.snapshot()] : [])];
   }
 }
 
@@ -246,6 +355,7 @@ export class FrameView {
       if (!d) throw new StoryCommandError(`frame ${name} is not in the story data`);
       this.frames.set(name, new FrameInstance(this, name, d));
     }
+    for (const f of this.frames.values()) f.checkTexts(this.ctx);
   }
 
   loaded(name) { return this.frames.get(name ?? "") || null; }

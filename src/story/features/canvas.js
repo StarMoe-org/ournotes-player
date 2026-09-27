@@ -2,6 +2,7 @@ import { Animator } from "../../engine/anim.js";
 import { F, join } from "../../engine/core.js";
 import { UIAffine, UIDraw, UIError, UIImage, UILayout, UIMesh, UINode, UISprite, UI_CLIP_TARGET, UI_STRIDE, uiColor32 } from "../../engine/ugui.js";
 import { StoryCommandError } from "../interfaces.js";
+import { StoryLayout } from "../ui-layout.js";
 import { AnimRecords } from "./clips.js";
 
 // uGUI prefab instances on the story's screen canvases (VideoCanvas, StillCanvas, FrameCanvas of UIAdvWidget): the
@@ -9,7 +10,8 @@ import { AnimRecords } from "./clips.js";
 // components and Animators. Generic uGUI (layout, Image meshes, canvas drawing) is engine/ugui.js; this module adds
 // the pieces those prefabs use beyond it: RectTransforms with a full local rotation, Image Tiled meshes, custom Image
 // materials, AspectRatioFitter, Mecanim Animators on UI nodes (engine/anim.js) and the canvas scaler of the widget's
-// screen canvases (Fwk.UI.ClampedCanvasScaler).
+// screen canvases (Fwk.UI.ClampedCanvasScaler). The auto layout is the story UI's (ui-layout.js); a text node's TMP
+// component is laid out and drawn through the story UI's text host when its owner binds one (`text`, a TMPText).
 //
 // A prefab record: {path, name, active, layer, localPosition, localRotation, localScale, rect, components} in
 // hierarchy order (parents first), components with `type` (engine) or `class` (MonoBehaviour).
@@ -299,6 +301,8 @@ export class TransformNode {
 // draws: a node with one of them raises when it would be drawn unless the prefab's particles are handled
 // (uiparticle.js marks their nodes particleHandled and draws them through the screen's item sources)
 const PARTICLE_COMPONENTS = ["UIParticle", "ParticleSystem", "ParticleSystemRenderer"];
+const LAYOUT_GROUPS = ["HorizontalLayoutGroup", "VerticalLayoutGroup", "GridLayoutGroup"];
+const TMP_CLASSES = ["TextMeshProUGUI", "RubyTextMeshProUGUI", "RubyEmojiTextMeshProUGUI"];
 
 export class CanvasPrefab {
   constructor(nodes, parent, canvas) {
@@ -335,16 +339,18 @@ export class CanvasPrefab {
       if (compOf(rec, cls) && compOf(rec, cls).m_Enabled !== 0) throw new UIError(`${rec.path}: ${cls} not implemented`);
     const f = compOf(rec, "AspectRatioFitter");
     if (f && f.m_Enabled && f.m_AspectMode) n.fitter = aspectFitter(f);
-    for (const cls of ["HorizontalLayoutGroup", "VerticalLayoutGroup"]) {
-      const lg = compOf(rec, cls);
-      if (lg && lg.m_Enabled) n.layoutGroup = { ...lg, class: cls };
-    }
+    // the layout components as the auto layout reads them: the record's layout group / element, enabled or not (the
+    // walk and LayoutElement.ignoreLayout), and the enabled ones on the node
+    const lgClass = LAYOUT_GROUPS.find((cls) => compOf(rec, cls)), lg = lgClass ? compOf(rec, lgClass) : null;
     const le = compOf(rec, "LayoutElement");
+    n.rec.layoutGroup = lg ? { ...lg, class: lgClass } : undefined;
+    n.rec.layoutElement = le || undefined;
+    if (lg && lg.m_Enabled) n.layoutGroup = { ...lg, class: lgClass };
     if (le && le.m_Enabled) n.layoutElement = le;
     const csf = compOf(rec, "ContentSizeFitter");
     if (csf && csf.m_Enabled) n.contentSizeFitter = csf;
-    const tmp = compOf(rec, "TextMeshProUGUI");
-    if (tmp) n.tmp = { rec: tmp, enabled: !!tmp.m_Enabled, text: tmp.m_text || "" };
+    const tmpClass = TMP_CLASSES.find((cls) => compOf(rec, cls)), tmp = tmpClass ? compOf(rec, tmpClass) : null;
+    if (tmp) n.tmp = { rec: tmp, cls: tmpClass, enabled: !!tmp.m_Enabled, text: tmp.m_text || "" };
     const sp = compOf(rec, "StretchPosition");
     if (sp) n.stretch = { enabled: !!sp.m_Enabled, positionPercent: sp.positionPercent };
   }
@@ -387,6 +393,8 @@ export class ScreenCanvas {
     this.textures = new Map();         // texture path -> descriptor
     this.materials = new Map();        // material name -> record
     this.size = null;
+    // uGUI auto layout (ui-layout.js) of a scaled canvas; a node's text component is its ILayoutElement when enabled
+    this.autoLayout = scaler ? new StoryLayout(scaler.m_ReferencePixelsPerUnit, (n) => (n.text && n.text.enabled ? n.text : null)) : null;
   }
 
   get refPPU() { return this.scaler.m_ReferencePixelsPerUnit; }
@@ -434,14 +442,18 @@ export class ScreenCanvas {
 
   canvasSize(width, height) { return clampedCanvasSize(this.scaler, width, height); }
 
+  // the canvas' RectTransforms and layout roots (a canvas without a scaler holds no layout components)
   layout(W, H) {
-    UILayout.layoutRoot(this.root, W, H, (n) => UILayout.rebuildUncontrolled(n));
+    if (this.autoLayout) this.autoLayout.layoutRoot(this.root, W, H);
+    else UILayout.layoutRoot(this.root, W, H, (n) => { throw new UIError(`${n.path}: a layout group on a canvas without a scaler`); });
     this.size = { W, H };
   }
 
   // paint order and inherited alpha: UIDraw.list. itemsOf(n, alpha) adds the items of other graphics (particles, video):
   // {node, material (record or null: the default UI material), texture (path) | glTex () => GLTex, verts, idx,
-  // canvasSpace (the vertices are final canvas positions, also on a node off the canvas plane)}.
+  // canvasSpace (the vertices are final canvas positions, also on a node off the canvas plane)}. A node's bound text
+  // (TMPText.meshes, after its image) gives {text: true, kind "text" | "sprite", material (a text material name of the
+  // story UI), texture (a glyph or sprite page of the story UI), verts, idx}.
   // A node off the canvas plane (rotated about x / y, or moved along z) has its mesh placed by its 3D matrix: under a
   // perspective camera (the canvas `perspective` = {fov}: Screen Space - Camera, the canvas plane filling the view at
   // its plane distance) the vertices keep their z and CanvasGL projects them (viewProjection); under an orthographic
@@ -462,7 +474,18 @@ export class ScreenCanvas {
         out.push({ node: n, material: img.material, texture: sp ? sp.texture.name : null, mesh,
                    verts, idx: Uint32Array.from(mesh.idx), ...(img.glTex ? { glTex: img.glTex } : {}) });
       }
-      if (n.tmp && n.tmp.enabled && n.tmp.text && alpha > 0) throw new UIError(`${n.path}: canvas text not implemented`);
+      const t = n.text && n.text.enabled ? n.text : null;
+      if (t && alpha > 0) {
+        if (offPlane) throw new UIError(`${n.path}: a text off the canvas plane`);
+        // TextMeshProUGUI on a camera canvas: the SDF scale x |lossyScale.y|, here relative to the canvas (canvas units)
+        const k = F(Math.hypot(n.matrix[2], n.matrix[3]));
+        for (const m of t.meshes()) {
+          if (!m.idx.length) continue;
+          const verts = UIDraw.pack(m.verts, n, alpha, true);
+          if (k !== 1) for (let o = 10; o < verts.length; o += UI_STRIDE) verts[o] = F(verts[o] * k);
+          out.push({ node: n, text: true, kind: m.kind, material: m.material, texture: m.texture, verts, idx: Uint32Array.from(m.idx) });
+        }
+      } else if (n.tmp && n.tmp.enabled && n.tmp.text && alpha > 0) throw new UIError(`${n.path}: a canvas text without a text binding`);
       if (n.particleComponents && !n.particleHandled && alpha > 0)
         throw new StoryCommandError(`${n.path}: ${n.particleComponents.join(" / ")} not drawn by this player`);
       if (itemsOf) {
@@ -489,8 +512,9 @@ export const viewProjection = (fov, W, H) => {
 // Graphic.defaultGraphicMaterial for images without a material: "Default UI Material" = UI/Default with its shader
 // defaults. A custom Image material keeps its own properties; _MainTex is the sprite's texture (Image.mainTexture).
 export class CanvasGL {
-  constructor(gl, lib, assets) {
-    this.gl = gl; this.lib = lib; this.assets = assets;
+  // textUI: the story UI, whose text materials, glyph pages and shader programs draw the canvas texts
+  constructor(gl, lib, assets, textUI = null) {
+    this.gl = gl; this.lib = lib; this.assets = assets; this.textUI = textUI;
     this.tex = new Map(); this.mats = new Map();
     this.solid = null; this.buf = null; this.defaultMaterial = null;
   }
@@ -526,6 +550,7 @@ export class CanvasGL {
       globals.unity_MatrixVP = vp; globals.glstate_matrix_projection = vp;
     }
     for (const it of items) {
+      if (it.text) { this._drawText(it, globals); continue; }
       const mat = it.material ? this.mats.get(it.material.material) : this.defaultMaterial;
       const tex = it.glTex ? it.glTex() : it.texture ? this.tex.get(it.texture) : this.solid.white;
       if (!tex) continue;                   // a graphic whose texture is not there yet (a video before its first frame)
@@ -534,6 +559,19 @@ export class CanvasGL {
                       _TextureSampleAdd: [0, 0, 0, 0], _ClipRect: [-32767, -32767, 32767, 32767] };
       UIDraw.draw(gl, this.lib, this.buf, mat, sheet, globals, it.verts, it.idx);
     }
+  }
+
+  // a TextMeshProUGUI mesh (StoryUI._draw): the glyph page with its size, or the sprite page of a sprite sub mesh
+  _drawText(it, globals) {
+    const ui = this.textUI;
+    if (!ui || !ui.materials || !ui.tex || !ui.lib) throw new UIError(`${it.node.path}: canvas text without the story UI's text resources`);
+    const mat = ui.materials[it.material], tex = ui.tex[it.texture];
+    if (!mat) throw new UIError(`${it.node.path}: text material ${it.material} not loaded`);
+    if (!tex) throw new UIError(`${it.node.path}: text page ${it.texture} not loaded`);
+    const sheet = it.kind === "sprite"
+      ? { _MainTex: tex, _MainTex_ST: [1, 1, 0, 0], _TextureSampleAdd: [0, 0, 0, 0], _ClipRect: [-32767, -32767, 32767, 32767] }
+      : { _MainTex: tex, _TextureWidth: tex.width, _TextureHeight: tex.height };
+    UIDraw.draw(this.gl, ui.lib, this.buf, mat, sheet, globals, it.verts, it.idx);
   }
 
   dispose() {

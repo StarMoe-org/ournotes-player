@@ -153,7 +153,8 @@ The player refuses an episode it cannot play as the game does, naming what is mi
 (the command registry below; checked from the manifest before the story's files download), a stage feature it does
 not draw (stage shadow textures), a talk window the story UI does not provide, a text the story UI cannot lay out, and
 in a session that draws, a chat episode without the story UI's chat data (`ui/ui.json` `chatWidget` and `chatTexts`,
-`ui/fonts.json` `chatTexts`). Such an episode is never played
+`ui/fonts.json` `chatTexts`) and a frame text without the story UI's frame text bindings (`ui/fonts.json`
+`frameTexts`). Such an episode is never played
 halfway. The one exception is a graphic found only while drawing: a still canvas that shows a UIParticle effect
 stops the session at that frame with an error that names the node and the component.
 

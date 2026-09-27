@@ -29,7 +29,8 @@ interpreter's commands, every `AdvCommand` has a handler (`registeredCommands()`
 
 The features read the media files that `story.json` names (`frames`, `stills`, `videos`, `effects`, `postEffects`,
 `chat`) and the story UI data (`ui/ui.json`: the video, still, frame and screen canvases, the video and still camera,
-the screen image, the story UI shaders). A file is read only when the episode has rows that use it. When a record
+the screen image, the story UI shaders; `ui/fonts.json` `frameTexts`: the text bindings of the frames' text nodes).
+A file is read only when the episode has rows that use it. When a record
 contradicts what the player implements (a canvas with another render mode or scaler, a camera with other clear flags,
 projection, volume mask or volume update mode), the episode is refused with the record's path.
 
@@ -52,7 +53,13 @@ projection, volume mask or volume update mode), the episode is refused with the 
 - **Frames** on the frame canvas with their images and Animators, plain Transforms included, and their canvas
   particles: Coffee.UIParticle simulates the frame's particle systems and bakes them with the UI camera (the story UI
   data's `uiCamera`) into canvas meshes, drawn in hierarchy order with the frame's other graphics. A session without
-  a GL context does not update them, as nothing is drawn.
+  a GL context does not update them, as nothing is drawn. A frame's texts: the Frame row gives the localized
+  `TargetTextIDs` to the frame's text receiver (the comment frame: a pattern of comment cards per Animator state, each
+  card's user name, user id and body formatted by the game's comment text rules and set through the UIText setter).
+  With the story UI's frame text bindings they are laid out by TextMeshPro's rules with the story UI's fonts and the
+  uGUI auto layout of the frame (layout groups, content size fitters, layout elements), and drawn with the story UI's
+  text materials; the comment frame's fitter scales its cards to the frame's size. A session that draws refuses an
+  episode whose Frame rows give texts to a node without a binding.
 - **Stills** with their images, canvas groups and DOTween Pro animations, rotations in three dimensions included.
 - **Particle effects** of Effect rows and stages (their particle systems, sprites and meshes), in the canvas or camera
   layer of their prefab.
@@ -75,7 +82,8 @@ projection, volume mask or volume update mode), the episode is refused with the 
 
 ## What is not drawn
 
-- **Canvas text** in frames and stills: such a node raises when it is drawn.
+- **Canvas text without a text binding** (a still's text, a serialized frame text without one): such a node raises
+  when it is drawn with a text.
 - **Canvas particles in stills**: such a node raises when it is drawn while visible. A headless session plays these
   stills.
 
