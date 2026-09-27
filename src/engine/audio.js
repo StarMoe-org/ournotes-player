@@ -288,27 +288,36 @@ export class Audio {
 
   // The PCM of a playing cue for lip-sync analysis (Live2DMotionSyncCriAudioInput, ListeningChannel 0): pull() returns
   // the channel-0 samples of the buffer played (time-stretched at a playback speed) since the previous pull, on the
-  // AudioContext clock (the first pull starts at the play position); sampleRate is the buffer's rate (the context's).
+  // AudioContext clock (the first pull after the start begins at the play position); sampleRate is the buffer's rate
+  // (the context's). A source made in onPlayStart comes before the cue starts: nothing has been output until then, and
+  // the buffer and the start position are read once the cue has started.
   pcmSource(info) {
-    const buf = info.playBuf || info.buf;
-    const data = buf.getChannelData(0), sr = buf.sampleRate;
-    const start = info.playBuf ? info.playStart : framesAt(info.startSample, info.meta.sampleRate, sr);
-    let last = null;
     const ctx = this.ctx;
-    const pos = () => Math.min(data.length, start + Math.floor((ctx.currentTime - info.startCtx) * sr));
+    let last = null;
+    // the channel-0 data of the buffer played, the frame the play starts at and the frame output up to now; null
+    // before the start
+    const at = () => {
+      if (!info.src) return null;
+      const buf = info.playBuf || info.buf, data = buf.getChannelData(0), sr = buf.sampleRate;
+      const start = info.playBuf ? info.playStart : framesAt(info.startSample, info.meta.sampleRate, sr);
+      return { data, start, cur: Math.min(data.length, start + Math.floor((ctx.currentTime - info.startCtx) * sr)) };
+    };
     return {
-      sampleRate: sr,
+      sampleRate: (info.playBuf || info.buf).sampleRate,
       pull: () => {
-        if (last === null) last = start;
-        const cur = pos();
-        const out = cur > last ? data.subarray(last, cur) : new Float32Array(0);
-        last = Math.max(last, cur);
+        const p = at();
+        if (!p) return new Float32Array(0);
+        if (last === null) last = p.start;
+        const out = p.cur > last ? p.data.subarray(last, p.cur) : new Float32Array(0);
+        last = Math.max(last, p.cur);
         return out;
       },
       // the last n samples output (zeros before the start; CriAtomExOutputAnalyzer.GetPcmData)
       latest: (n) => {
-        const out = new Float32Array(n), cur = pos(), from = cur - n;
-        for (let i = Math.max(0, -from); i < n; i++) if (from + i >= start) out[i] = data[from + i];
+        const out = new Float32Array(n), p = at();
+        if (!p) return out;
+        const from = p.cur - n;
+        for (let i = Math.max(0, -from); i < n; i++) if (from + i >= p.start) out[i] = p.data[from + i];
         return out;
       },
       // the output is paused (the context suspended; CriAtomExPlayer.IsPaused)

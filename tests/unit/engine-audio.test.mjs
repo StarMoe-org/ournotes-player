@@ -82,6 +82,35 @@ test("a cue at playback speed 2 plays a time-stretched buffer; the synced time r
   assert.equal(a.get(plain).rate, 1);
 });
 
+test("a PCM source made in onPlayStart outputs nothing before the start, then the samples from the play position", () => {
+  const ctx = fakeContext();
+  const src = ctx.buffer(1, 48000, 48000);
+  const x = src.getChannelData(0);
+  for (let i = 0; i < x.length; i++) x[i] = i + 1;
+  const cue = { sheet: "s", cue: "c", category: 2, row: {} };
+  const a = new Audio(() => cue, { time: 0 }, { context: ctx });
+  a.buffers.set("s/c", { buf: src, meta: { sampleRate: 48000, samples: 48000 } });
+  ctx.currentTime = 4;
+  for (const speed of [1, 2]) {
+    let pcm = null, drained = null;
+    const id = a.play(1, { speed, startSec: 0.25, crossFade: 0,
+                           onPlayStart: (info) => { pcm = a.pcmSource(info); drained = pcm.pull(); } });
+    assert.equal(drained.length, 0);                          // the lip sync's drain before the cue starts
+    const info = a.get(id);
+    assert.equal(pcm.sampleRate, 48000);
+    ctx.currentTime += 0.125;
+    const got = pcm.pull();
+    assert.equal(got.length, 6000);
+    const played = info.playBuf.getChannelData(0);
+    assert.equal(got[0], played[info.playStart]);
+    assert.equal(info.playBuf.length, speed === 1 ? 48000 : 24000);
+    if (speed === 1) assert.equal(got[0], 12001);              // 0.25 s into the waveform
+    assert.equal(pcm.pull().length, 0);
+    assert.deepEqual(Array.from(pcm.latest(2)), [played[info.playStart + 5998], played[info.playStart + 5999]]);
+    a.stop(id);
+  }
+});
+
 test("timeStretch keeps the length ratio and the pitch of a sine", () => {
   const sr = 48000, n = sr, f = 300;
   const x = new Float32Array(n);
