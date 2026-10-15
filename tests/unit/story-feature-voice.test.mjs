@@ -23,9 +23,9 @@ const steps = async (loop, n) => { await flush(); for (let i = 0; i < n; i++) { 
 // a sound manager whose voices finish `len` frames after they start (onFinished runs on stop and on the end)
 const fakeAudio = (loop, len) => {
   const a = { nextId: 1, playing: new Map(), log: [], lastBgmOrSeFrame: -1,
-    play(soundId, { onPlayStart = null } = {}) {
-      const info = { id: a.nextId++, soundId, onFinished: [], end: loop.frameCount + len };
-      a.playing.set(info.id, info); a.log.push(["play", soundId, loop.frameCount]);
+    play(soundId, { onPlayStart = null, category = null } = {}) {
+      const info = { id: a.nextId++, soundId, category, onFinished: [], end: loop.frameCount + len };
+      a.playing.set(info.id, info); a.log.push(["play", soundId, loop.frameCount, category]);
       if (onPlayStart) onPlayStart(info);
       return info.id;
     },
@@ -64,6 +64,8 @@ test("Voice (auto): the voices, then 0.6 s from the frame after the last one's e
   // costs one tick; then 18 frames of DelayWithSpeedAdjustment(0.6)
   assert.equal(frames, 20 + 1 + 2 + 18);
   assert.deepEqual(t.ctx.audio.log.filter((e) => e[0] === "play").map((e) => e[1]), [7, 8, 9]);
+  // on the Voice category whatever the rows say (ADV 10579-10608 put their voices on Bgm)
+  assert.deepEqual(t.ctx.audio.log.filter((e) => e[0] === "play").map((e) => e[3]), [2, 2, 2]);
   // lip sync on the voice (A: voice 1, B: voice 2), stopped at the voice's end and again by the row's end; voice 3 has
   // no speaker
   assert.deepEqual(t.chLog.filter((e) => e[0] === "A" && e[1] === "lips").map((e) => e[2]), [1, null, null]);

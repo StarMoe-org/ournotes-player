@@ -1,3 +1,4 @@
+import { SOUND_CATEGORY } from "../../engine/audio.js";
 import { floatParam } from "../params.js";
 import { addLogEntry } from "../features/talklog.js";
 import { removeTagsKeepingRuby } from "../ui-talk.js";
@@ -53,9 +54,12 @@ export const stopCurrentVoices = (p, preserveAutoAdvToken = false) => {
 
 // AdvTalkVoicePlaybackHelper.TryPlayVoice: SoundManager.Play at the playback speed; onPlayStart runs before the sound
 // starts (the lip sync is attached first)
+// DEVIATION: the voice plays on the Voice category whatever its -Sound row's _category says. The rows of some episodes
+// put their voices on Bgm (_category 0: the linkstory episodes of ADV 10579-10608), which would have the music volume
+// turn the voices down; the Voice volume is the one the app's options give the voices.
 export const tryPlayVoice = (p, id, sounds, onStart) => {
   const a = p.ctx.audio, rate = p.speedRate();
-  const pid = a.play(id, { crossFade: 0.3, ...(rate !== 1 ? { speed: rate } : {}),
+  const pid = a.play(id, { crossFade: 0.3, category: SOUND_CATEGORY.Voice, ...(rate !== 1 ? { speed: rate } : {}),
                            onPlayStart: (info) => { sounds.push(info); if (onStart) onStart(info); } });
   p.session.voicePlayIds.push(pid);
   return pid;

@@ -249,6 +249,12 @@ story player in their host screen ([story-simple.md](story-simple.md)).
 - The backlog (`TalkLogView`) and the choices (`ChoiceView`): they stay hidden as the game's refresh leaves them (the
   backlog at alpha 0, the choice items inactive). The backlog does not open; its entries are the `log` events.
 
+### Departures from the data
+
+- The voices of Talk and Voice rows play on the Voice category whatever their `-Sound` row's `_category` says. The
+  linkstory episodes ADV 10579–10608 put their voices on Bgm (`_category` 0), which would have the music volume turn
+  the voices down; here the voice volume governs them, as it does every other episode's voices.
+
 ### Engine behaviour
 
 Behaviour of the engine (Unity, URP, CRI) that the game's code does not show is marked `ENGINE:` in the sources, as in

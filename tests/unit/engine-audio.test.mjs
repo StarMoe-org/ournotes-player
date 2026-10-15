@@ -2,7 +2,8 @@
 // a voice played time-stretched and the movie bus of the videos' sound; engine/timestretch.js on synthetic PCM.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Audio, playbackSpeed } from "../../src/engine/audio.js";
+import { Audio, SOUND_CATEGORY, playbackSpeed } from "../../src/engine/audio.js";
+import { SilentAudio } from "../../src/story/silent-audio.js";
 import { timeStretch } from "../../src/engine/timestretch.js";
 
 const F = Math.fround;
@@ -16,7 +17,7 @@ const fakeContext = () => {
   };
   return {
     sampleRate: 48000, currentTime: 0, state: "running", destination: {},
-    createGain() { return { gain: param(1), connect(n) { return n; } }; },
+    createGain() { return { gain: param(1), to: null, connect(n) { this.to = n; return n; } }; },
     createMediaElementSource(el) {
       const n = { el, to: null, connect(x) { n.to = x; return x; }, disconnect() { n.to = null; } };
       this.media.push(n);
@@ -63,6 +64,26 @@ test("option volumes multiply the category bus; All scales by DefaultVolume, a n
   assert.equal(a.getOptionVolume("Bgm"), 1);
   assert.equal(a.buses[0].gain.value, F(F(0.7) * 0.5));
   assert.ok(Number.isNaN(a.getOptionVolume("Nope")));
+});
+
+test("play's category: the cue on that bus instead of its row's category; stopAll by the category played on", () => {
+  const ctx = fakeContext(), loop = { time: 0 };
+  const cue = { sheet: "s", cue: "c", category: SOUND_CATEGORY.Bgm, row: {} };      // a voice row on Bgm (ADV 10579)
+  const a = new Audio(() => cue, loop, { context: ctx });
+  a.buffers.set("s/c", { buf: ctx.buffer(1, 48000, 48000), meta: { sampleRate: 48000, samples: 48000 } });
+  const voice = a.get(a.play(1, { crossFade: 0, category: SOUND_CATEGORY.Voice }));
+  const bgm = a.get(a.play(1, { crossFade: 0 }));
+  assert.deepEqual([voice.category, voice.cue.category, bgm.category], [SOUND_CATEGORY.Voice, SOUND_CATEGORY.Voice, SOUND_CATEGORY.Bgm]);
+  assert.deepEqual([voice.gain.to === a.buses[SOUND_CATEGORY.Voice], bgm.gain.to === a.buses[SOUND_CATEGORY.Bgm]], [true, true]);
+  assert.equal(cue.category, SOUND_CATEGORY.Bgm);                                  // the resolved row is left as it is
+  a.stopAll(SOUND_CATEGORY.Bgm);
+  assert.deepEqual([a.isPlaying(voice.id), a.isPlaying(bgm.id)], [true, false]);
+
+  const silent = new SilentAudio(() => cue, loop, { assets: { json: () => ({ c: { samples: 48000, sampleRate: 48000 } }) } });
+  const sv = silent.play(1, { category: SOUND_CATEGORY.Voice }), sb = silent.play(1);
+  assert.deepEqual([silent.get(sv).category, silent.get(sb).category], [SOUND_CATEGORY.Voice, SOUND_CATEGORY.Bgm]);
+  silent.stopAll(SOUND_CATEGORY.Bgm);
+  assert.deepEqual([silent.isPlaying(sv), silent.isPlaying(sb)], [true, false]);
 });
 
 test("a video's sound: on the movie bus at the movie volume, which no category or option volume changes", () => {

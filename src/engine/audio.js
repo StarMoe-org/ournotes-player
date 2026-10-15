@@ -24,6 +24,9 @@ export const SOUND_CATEGORY = { Bgm: 0, Se: 1, Voice: 2, NotesSe: 3, All: 9999 }
 export const framesAt = (n, from, to, round = Math.round) => (from === to ? n : round(n * to / from));
 export const SOUND_BUS_GAIN = { 0: 0.7, 1: 1.0, 2: 1.0 };
 
+// a resolved cue on another category than its row's (null: the row's)
+export const withCategory = (c, category) => (category === null || category === c.category ? c : { ...c, category });
+
 // Fwk.Sound.SoundVolume over the CRI category volumes. SoundVolumeSettings gives each category name its
 // DefaultVolume; SoundManager.Boot calls ChangeVolume("All", 1.0), so every category starts at DefaultVolume.
 //   ChangeVolume: "All" (SoundCategoryNames.All) -> ChangeVolumeAll (every settings entry);
@@ -226,10 +229,11 @@ export class Audio {
     }
   }
 
-  // SoundPlayer.Play; returns the unique sound id (synchronous)
+  // SoundPlayer.Play; returns the unique sound id (synchronous). `category`: the bus to play on instead of the row's
+  // _category (the story's voices, see tryPlayVoice)
   play(soundId, { isAutoCrossFade = false, crossFade = 0.3, startSec = 0, speed = 1, onPlayStart = null, loop = false,
-                  forceFadeIn = false, volume = 1 } = {}) {
-    const c = this.cueOf(soundId);
+                  forceFadeIn = false, volume = 1, category = null } = {}) {
+    const c = withCategory(this.cueOf(soundId), category);
     const entry = this.buffers.get(`${c.sheet}/${c.cue}`);
     if (!entry) throw new Error(`cue ${c.cue} not preloaded`);
     const rate = playbackSpeed(speed);

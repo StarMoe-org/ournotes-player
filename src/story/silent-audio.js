@@ -1,4 +1,4 @@
-import { SOUND_CATEGORY, SoundCategoryVolumes } from "../engine/audio.js";
+import { SOUND_CATEGORY, SoundCategoryVolumes, withCategory } from "../engine/audio.js";
 
 // SilentAudio: the SoundManager of a story session without Web Audio (Node, or a page that plays the story muted).
 // It keeps the sounds' timing on the player loop's clock and plays nothing: a cue lasts its length in cues.json
@@ -31,9 +31,10 @@ export class SilentAudio {
 
   async preload(soundIds) { if (this.sounds) for (const id of soundIds) this.cueOf(id); }
 
-  play(soundId, { isAutoCrossFade = false, crossFade = 0.3, startSec = 0, speed = 1, onPlayStart = null, loop = false } = {}) {
+  play(soundId, { isAutoCrossFade = false, crossFade = 0.3, startSec = 0, speed = 1, onPlayStart = null, loop = false,
+                  category = null } = {}) {
     if (!this.sounds) return -1;
-    const c = this.cueOf(soundId);
+    const c = withCategory(this.cueOf(soundId), category);
     if (isAutoCrossFade && c.category === SOUND_CATEGORY.Bgm)
       for (const i of [...this.playing.values()]) if (i.category === SOUND_CATEGORY.Bgm) this._stopInfo(i, true, crossFade);
     const length = Math.max(0, c.meta.samples / c.meta.sampleRate - Math.trunc(startSec * 1000) / 1000) / speed;
